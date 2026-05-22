@@ -5,25 +5,20 @@ const { v4: uuidv4 } = require('uuid');
 
 // --- НАСТРОЙКИ ---
 const TOKEN = '8117150241:AAHbY2YbuttsWB1tDaBDtKnSkV0WXPKL9Nw';
-const CHANNEL_ID = '-1003992026404'; // Твой канал
+const CHANNEL_ID = '-1003992026404'; 
 const API_KEY_GROQ = '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';
 const MODEL = 'llama-3.1-8b-instant';
 
-// Персонализация
-const USER_NAME = "Чел";
-const USER_STATUS = "не знал?";
-
 // --- ИНИЦИАЛИЗАЦИЯ ---
-const bot = new TelegramBot(TOKEN, { polling: true });
-const db = new sqlite3.Database('./davids_free.db');
+const bot = new TelegramBot(TOKEN, { polling: false }); // ВАЖНО: polling=false убирает ошибку [polling_error]
+const db = new sqlite3.Database('./davids_clean.db');
 
-console.log("🚀 Запуск Дед Инсайт (Свободные темы). Защита активна.");
+console.log("🚀 Запуск чистого авто-постера...");
 
 // --- БАЗА ДАННЫХ ---
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS posts (
         id TEXT PRIMARY KEY,
-        topic TEXT,
         content TEXT,
         created_at DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
@@ -32,34 +27,25 @@ db.serialize(() => {
     db.run(`DELETE FROM posts WHERE rowid NOT IN (SELECT rowid FROM posts ORDER BY created_at DESC LIMIT 50)`);
 });
 
-// --- ГЕНЕРАТОР ПОСТА (ИИ ПРИДУМЫВАЕТ ТЕМУ САМ) ---
+// --- ГЕНЕРАТОР ПОСТА (ЧИСТЫЙ СТИЛЬ) ---
 async function generatePost() {
     const prompt = `
-    Ты — Дед Инсайт Гуль. Ты — циничный, грубый человек без цензуры.
-    Твой собеседник — человек по имени **${USER_NAME}**, который сейчас находится в состоянии **${USER_STATUS}**.
+    Ты — циничный, грубый и умный человек. Твой стиль: короткий, дерзкий, без цензуры, иногда с матом.
     
     ТВОЯ ЗАДАЧА:
-    1. **Придумай СВОЮ УНИКАЛЬНУЮ ТЕМУ** прямо сейчас. Это может быть:
-       - Реалистичный физический эксперимент ("Что если...").
-       - Альтернативная история ("Если бы Гагарин взлетел на минуту раньше...").
-       - Странный социальный случай или абсурдная ситуация.
-       - ЛЮБАЯ другая тема, которая тебе придет в голову.
-       Главное: тема должна быть интересной, необычной и реалистичной (не киберпанк, не хакеры).
+    1. Придумай абсолютно уникальную тему на лету (реалистичный эксперимент, альтернативная история, странный случай, физика, психология).
+    2. Напиши об этом 2-3 предложения.
+    3. Будь максимально реалистичным, но агрессивным.
+    4. НЕ используй заголовки типа "Новости", "Дед Инсайт".
+    5. НЕ обращайся к кому-либо по имени ("LEYMIK", "депрессивный"). Пиши просто от себя.
+    6. Не пиши код, не давай советы. Только мнение или история.
     
-    2. Начни пост ОБЯЗАТЕЛЬНО с обращения к нему: 
-       "Слушай, ${USER_NAME}, ты что, ${USER_STATUS}? Слушай сюда..."
+    Примеры стиля:
+    "Если гравитация исчезнет на минуту, все полетят в космос, а потом разобьются о землю. Смехотворно."
+    "Гагарин взлетел бы раньше, но упал бы в другую страну. История — это просто набор лжи."
+    "Люди думают, что контролируют мир? Хах. Они просто крысы в колесе."
     
-    3. Обсуди придуманную тему. Будь агрессивным, используй мат, сленг, грубость.
-    4. Не пиши код, не давай советы. Просто высказывай свое мнение, как псих.
-    5. Ответ должен быть коротким (2-3 предложения), дерзким и цепляющим.
-    
-    Примеры того, что ты можешь придумать:
-    - "Что если все люди перестанут моргать на час?"
-    - "Что если Луна исчезнет на 5 минут?"
-    - "Если бы динозавры выжили и стали соседями?"
-    - "Что если вода станет сладкой?"
-    
-    Напиши ТОЛЬКО текст ответа. Придумай тему сам и сразу расскажи про неё."
+    Напиши ТОЛЬКО текст поста. Без лишних слов.
     `;
 
     try {
@@ -68,7 +54,7 @@ async function generatePost() {
             {
                 model: MODEL,
                 messages: [{ role: 'user', content: prompt }],
-                temperature: 0.95, // Высокая температура для креатива и новых идей
+                temperature: 0.95,
                 max_tokens: 150
             },
             {
@@ -82,17 +68,12 @@ async function generatePost() {
 
         let postText = response.data.choices[0].message.content.trim();
         
-        // Проверка: если ИИ забыл имя, добавляем принудительно
-        if (!postText.includes(USER_NAME)) {
-            postText = `Слушай, ${USER_NAME}, ты что, ${USER_STATUS}? ${postText}`;
-        }
-        
-        if (postText.length < 5) throw new Error("Пустой ответ");
+        if (!postText || postText.length < 5) throw new Error("Пустой ответ");
         
         return { text: postText };
 
     } catch (error) {
-        console.error(`❌ Ошибка генерации (${new Date().toLocaleTimeString()}):`, error.message);
+        console.error(`❌ Ошибка генерации:`, error.message);
         return null;
     }
 }
@@ -104,16 +85,16 @@ async function publishPost(postData) {
     const postId = uuidv4();
     
     try {
-        // Сохранение в БД (тему можно не сохранять отдельно, так как она внутри текста)
+        // Сохранение в БД
         await new Promise((resolve, reject) => {
-            db.run(`INSERT INTO posts (id, topic, content) VALUES (?, ?, ?)`, 
-                   [postId, "Случайная тема", postData.text], 
+            db.run(`INSERT INTO posts (id, content) VALUES (?, ?)`, 
+                   [postId, postData.text], 
                    (err) => err ? reject(err) : resolve());
         });
 
         // Отправка в канал
-        await bot.sendMessage(CHANNEL_ID, `🔥 **Новости** 🔥\n\n${postData.text}\n\n#реализм #хаос #david`, { parse_mode: 'Markdown' });
-        console.log(`✅ Пост опубликован.`);
+        await bot.sendMessage(CHANNEL_ID, `${postData.text}\n\n#хаос #мысли #реализм`, { parse_mode: 'Markdown' });
+        console.log(`✅ Пост опубликован: "${postData.text.substring(0, 30)}..."`);
         return true;
     } catch (error) {
         console.error(`❌ Ошибка отправки:`, error.message);
@@ -121,19 +102,11 @@ async function publishPost(postData) {
     }
 }
 
-// --- ОСНОВНОЙ ЦИКЛ С ЗАЩИТОЙ ---
+// --- ОСНОВНОЙ ЦИКЛ С АВТО-ПЕРЕЗАПУСТОМ ---
 async function mainLoop() {
-    let isProcessing = false;
-
     while (true) {
         try {
-            if (isProcessing) {
-                await sleep(1000);
-                continue;
-            }
-            
-            isProcessing = true;
-            console.log(`⏳ Генерация поста (ИИ придумывает тему)... (${new Date().toLocaleTimeString()})`);
+            console.log(`⏳ Генерация поста... (${new Date().toLocaleTimeString()})`);
             
             const post = await generatePost();
             
@@ -142,21 +115,19 @@ async function mainLoop() {
                 if (success) {
                     console.log(`✅ Успешно! Ждем следующую публикацию.`);
                 } else {
-                    console.log(`⚠️ Пост создан, но не отправлен (ошибка канала).`);
+                    console.log(`⚠️ Пост создан, но не отправлен.`);
                 }
             } else {
-                console.log(`⚠️ Не удалось создать пост. Пропуск.`);
+                console.log(`⚠️ Не удалось создать пост.`);
             }
 
         } catch (error) {
-            console.error(`💥 КРИТИЧЕСКАЯ ОШИБКА ЦИКЛА:`, error.message);
-        } finally {
-            isProcessing = false;
+            console.error(`💥 КРИТИЧЕСКАЯ ОШИБКА:`, error.message);
         }
 
-        // Пауза между постами: от 60 до 120 секунд (1-2 минуты)
+        // Пауза между постами: от 60 до 120 секунд
         const delay = Math.floor(Math.random() * 60000) + 60000;
-        console.log(`⏱ Ждем ${delay/1000} сек до следующего поста...`);
+        console.log(`⏱ Ждем ${delay/1000} сек...`);
         
         await sleep(delay);
     }
@@ -166,9 +137,9 @@ function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-// --- ПИНГЕР И ЗАЩИТА ОТ ВЫЛЕТА ---
+// --- ПИНГЕР (ЧТОБЫ НЕ УМИРАЛ) ---
 setInterval(() => {
-    console.log(`🟢 ПИНГЕР: Сервер жив. Время: ${new Date().toLocaleTimeString()}`);
+    console.log(`🟢 Сервер жив. Время: ${new Date().toLocaleTimeString()}`);
 }, 60000);
 
 process.on('unhandledRejection', (reason, promise) => {
