@@ -112,7 +112,7 @@ async function publishPost(postData) {
         });
 
         // Отправка в канал
-        await bot.sendMessage(CHANNEL_ID, `🔥 **ДЕД ИНСАЙД НОВОСТИ** 🔥\n\n${postData.text}\n\n#реализм #хаос #david`, { parse_mode: 'Markdown' });
+        await bot.sendMessage(CHANNEL_ID, `🔥 **Новости** 🔥\n\n${postData.text}\n\n#реализм #хаос #david`, { parse_mode: 'Markdown' });
         console.log(`✅ Пост опубликован.`);
         return true;
     } catch (error) {
