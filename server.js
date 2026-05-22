@@ -10,8 +10,8 @@ const API_KEY_GROQ = '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';
 const MODEL = 'llama-3.1-8b-instant';
 
 // Персонализация
-const USER_NAME = "LEYMIK";
-const USER_STATUS = "ДЕПРЕССИВНЫЙ";
+const USER_NAME = "Чел";
+const USER_STATUS = "не знал?";
 
 // --- ИНИЦИАЛИЗАЦИЯ ---
 const bot = new TelegramBot(TOKEN, { polling: true });
