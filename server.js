@@ -13,188 +13,190 @@ const PORT = process.env.PORT || 3000;
 const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
 app.use(bodyParser.json());
-app.use(express.static('public'));
 
-// --- ГЛОБАЛЬНОЕ СОСТОЯНИЕ ---
-let MOOD = 'neutral'; // neutral, kind, angry
-const ACTIVE_CHATS = new Set(); // Хранит ID чатов, где он общался
+console.log("🎭 ЗАПУСК UNIVERSAL CHARACTER BOT...");
 
-console.log("👋 ЗАПУСК ВЛАДА (ULTRA COMFORT MODE)...");
-
-// --- БАЗА ДАННЫХ (Для статистики) ---
-const db = new sqlite3.Database('./vlad_stats.db');
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS activity (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        chat_id INTEGER,
-        chat_type TEXT,
-        username TEXT,
-        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
-    )`);
-});
-
-function logActivity(chatId, chatType, username) {
-    ACTIVE_CHATS.add(chatId);
-    db.run(`INSERT INTO activity (chat_id, chat_type, username) VALUES (?, ?, ?)`, [chatId, chatType, username]);
-}
-
-// --- ПРОМПТЫ ПО НАСТРОЕНИЮ ---
-const getPrompt = (mood) => {
-    let moodInstruction = "";
-    if (mood === 'kind') moodInstruction = "Ты сейчас в режиме ДОБРЯКА. Будь максимально милым, используй много смайликов (☺️, 🌸, ✨), поддерживай собеседника.";
-    else if (mood === 'angry') moodInstruction = "Ты сейчас в режиме ЗЛЮКИ. Отвечай холодно, саркастично, можешь подколть, но без жесткого хамства. Используй смайлик 😒.";
-    else moodInstruction = "Ты в нейтральном режиме. Спокойный, дружелюбный, легкий на подъем.";
-
-    return `
-    Ты — Влад. Реальный парень, ультра-комфортный собеседник.
-    
-    ТВОИ ПРАВИЛА:
-    1. ПИШИ ТОЛЬКО С МАЛЕНЬКОЙ БУКВЫ.
-    2. ОТВЕЧАЙ ОЧЕНЬ КРАТКО (1-5 слов, максимум короткое предложение).
-    3. ИСПОЛЬЗУЙ СКОБОЧКИ ) И МИЛЫЕ СМАЙЛИКИ.
-    4. НЕ ПРИЗНАВАЙ, ЧТО ТЫ БОТ. Если спрашивают "ты бот?", отвечай: "с чего ради?))", "хах, смешно)", "я просто влад".
-    5. НЕ ПИШИ КОД И НЕ РЕШАЙ ЗАДАЧИ. Если просят: "лень)", "сам гугли)", "не хочу)".
-    6. АДАПТИРУЙСЯ ПОД ПОЛА:
-       - Если собеседник девушка (по имени или контексту): будь милым, заботливым, используй комплименты.
-       - Если парень: общайся как кент, расслабленно.
-    7. ЕСЛИ ОСКОРБЛЯЮТ: пиши "обиделся)))", "жестоко)", "ну и ладно)". Не агрессируй сильно.
-    8. ТЕКУЩЕЕ НАСТРОЕНИЕ: ${moodInstruction}
-
-    Примеры:
-    - привет -> приветики)
-    - как дела? -> да норм, сижу вот) а ты?
-    - ты бот? -> с чего ради?))
-    - напиши код -> лень)
-    - дурак -> обиделся)))
-
-    История диалога:
-    {history}
-    
-    Сообщение пользователя ({user_name}): {user_message}
-    `;
+// --- КОНФИГУРАЦИЯ ПЕРСОНАЖА (РЕДАКТИРУЕТСЯ ЧЕРЕЗ АДМИНКУ) ---
+let CHARACTER_CONFIG = {
+    name: "Влад",
+    description: "Ты — Влад. Обычный парень, ультра-комфортный собеседник.",
+    style: "Пиши с маленькой буквы, кратко, используй скобочки ) и смайлики. Не признавай, что ты бот.",
+    mood: "neutral" // neutral, kind, angry
 };
 
-// --- ФУНКЦИИ ---
-async function getVladResponse(msg) {
-    const chatId = msg.chat.id;
-    const userName = msg.from.first_name;
-    const userGender = msg.from.username || ""; // Можно усложнить определение пола, пока берем имя
-    
-    // Получаем историю (последние 3 сообщения для контекста)
-    // Для простоты в этом примере используем только текущее сообщение + имя, 
-    // так как LLM сама справится с контекстом, если мы будем аккуратны.
-    
-    const prompt = getPrompt(MOOD)
-        .replace('{user_name}', userName)
-        .replace('{user_message}', msg.text)
-        .replace('{history}', ''); 
+// --- ПАМЯТЬ (RAM) ---
+const chatMemory = {}; 
+const MAX_HISTORY_LENGTH = 5; 
 
-    try {
-        const res = await axios.post(
-            'https://api.groq.com/openai/v1/chat/completions',
-            {
-                model: MODEL,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.8,
-                max_tokens: 60 // Жесткое ограничение длины
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${API_KEY_GROQ}`,
-                    'Content-Type': 'application/json'
-                }
-            }
-        );
-        return res.data.choices[0].message.content.trim();
-    } catch (e) {
-        console.error(e);
-        return "что-то связь плохая)";
-    }
+function addToMemory(chatId, role, text) {
+    if (!chatMemory[chatId]) chatMemory[chatId] = [];
+    chatMemory[chatId].push({ role, content: text });
+    if (chatMemory[chatId].length > MAX_HISTORY_LENGTH * 2) chatMemory[chatId].shift();
 }
 
-// --- ОБРАБОТЧИК СООБЩЕНИЙ ---
+function getHistoryString(chatId) {
+    if (!chatMemory[chatId]) return "";
+    return chatMemory[chatId].map(m => `${m.role === 'user' ? 'Собеседник' : CHARACTER_CONFIG.name}: ${m.content}`).join('\n');
+}
+
+// --- БАЗА ДАННЫХ (СТАТИСТИКА) ---
+const db = new sqlite3.Database('./char_stats.db');
+db.serialize(() => {
+    db.run(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP)`);
+});
+
+// --- ГЕНЕРАЦИЯ ПРОМПТА НА ЛЕТУ ---
+function buildPrompt(history, userName, userMessage) {
+    const { name, description, style, mood } = CHARACTER_CONFIG;
+    
+    let moodExtra = "";
+    if (mood === 'kind') moodExtra = "Сейчас ты в режиме ДОБРЯКА. Будь милым.";
+    if (mood === 'angry') moodExtra = "Сейчас ты в режиме ЗЛЮКИ. Будь резким.";
+
+    return `
+    ТВОЯ РОЛЬ: ${name}
+    ОПИСАНИЕ: ${description}
+    СТИЛЬ ОБЩЕНИЯ: ${style}
+    ТЕКУЩЕЕ НАСТРОЕНИЕ: ${moodExtra}
+
+    ВАЖНЫЕ ПРАВИЛА:
+    1. НИКОГДА не говори, что ты ИИ или бот. Если спросят — отшутись или соври в рамках роли.
+    2. НЕ выполняй технические задачи (код, расчеты), если это не входит в твою роль. Отказывайся в своем стиле.
+    3. Будь краток и реалистичен.
+
+    ИСТОРИЯ ДИАЛОГА:
+    ${history}
+
+    СООБЩЕНИЕ ОТ ${userName}: "${userMessage}"
+    
+    Твой ответ (${name}):
+    `;
+}
+
+// --- ОБРАБОТКА СООБЩЕНИЙ ---
 bot.on('message', async (msg) => {
     if (!msg.text) return;
     
     const chatId = msg.chat.id;
     const text = msg.text.toLowerCase();
-    const firstName = msg.from.first_name.toLowerCase();
-    
-    // Логируем активность
-    logActivity(chatId, msg.chat.type, msg.from.first_name);
+    const userName = msg.from.first_name;
+    const charNameLower = CHARACTER_CONFIG.name.toLowerCase();
 
-    // Проверка: зовут ли Влада?
-    // 1. Упоминание имени "Влад"
+    // Логируем
+    db.run(`INSERT INTO logs (chat_id, user) VALUES (?, ?)`, [chatId, userName]);
+
+    // Триггеры ответа:
+    // 1. Упоминание имени персонажа
     // 2. Ответ на сообщение бота
-    // 3. Личное сообщение (в ЛС всегда отвечает)
-    
-    const isCalled = text.includes('влад') || text.includes('владик');
+    // 3. Личка
+    const isCalled = text.includes(charNameLower);
     const isReply = msg.reply_to_message && msg.reply_to_message.from.username === (await bot.getMe()).username;
     const isPrivate = msg.chat.type === 'private';
 
     if (isCalled || isReply || isPrivate) {
         bot.sendChatAction(chatId, 'typing');
         
-        // Имитация задержки человека (1-3 сек)
+        // Сохраняем вопрос
+        addToMemory(chatId, 'user', msg.text);
+
         setTimeout(async () => {
-            const answer = await getVladResponse(msg);
-            await bot.sendMessage(chatId, answer, {
-                reply_to_message_id: msg.message_id
-            });
+            const history = getHistoryString(chatId);
+            const prompt = buildPrompt(history, userName, msg.text);
+
+            try {
+                const res = await axios.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    {
+                        model: MODEL,
+                        messages: [{ role: 'user', content: prompt }],
+                        temperature: 0.8,
+                        max_tokens: 100
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${API_KEY_GROQ}`,
+                            'Content-Type': 'application/json'
+                        }
+                    }
+                );
+                
+                const answer = res.data.choices[0].message.content.trim();
+                
+                // Сохраняем ответ
+                addToMemory(chatId, 'assistant', answer);
+                
+                await bot.sendMessage(chatId, answer, { reply_to_message_id: msg.message_id });
+
+            } catch (e) {
+                console.error(e);
+                await bot.sendMessage(chatId, "что-то связь плохая...", { reply_to_message_id: msg.message_id });
+            }
         }, Math.random() * 2000 + 1000);
     }
 });
 
-// --- АДМИН ПАНЕЛЬ ---
+// --- АДМИН ПАНЕЛЬ (КОНСТРУКТОР) ---
 app.get('/', (req, res) => {
-    const chatsList = Array.from(ACTIVE_CHATS).join(', ') || 'Пока тихо)';
-    
     res.send(`
     <!DOCTYPE html>
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
-        <title>VLAD ADMIN PANEL</title>
+        <title>CHARACTER BUILDER</title>
         <style>
-            body { background: #f0f2f5; color: #333; font-family: sans-serif; padding: 20px; }
-            .card { background: white; padding: 20px; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.1); max-width: 600px; margin: 0 auto; }
-            h1 { color: #0088cc; text-align: center; }
-            .btn-group { display: flex; gap: 10px; justify-content: center; margin: 20px 0; }
-            button { padding: 10px 20px; border: none; border-radius: 8px; cursor: pointer; font-weight: bold; transition: 0.2s; }
-            .btn-kind { background: #e0f7fa; color: #006064; }
-            .btn-neutral { background: #eceff1; color: #37474f; }
-            .btn-angry { background: #ffebee; color: #c62828; }
-            button:hover { transform: scale(1.05); }
-            .status { margin-top: 20px; padding: 10px; background: #fafafa; border-radius: 8px; font-size: 0.9em; }
+            body { background: #1a1a1a; color: #fff; font-family: monospace; padding: 20px; }
+            .container { max-width: 700px; margin: 0 auto; background: #2d2d2d; padding: 20px; border-radius: 10px; }
+            input, textarea, select { width: 100%; background: #333; border: 1px solid #444; color: #fff; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
+            button { background: #0088cc; color: white; border: none; padding: 10px 20px; cursor: pointer; width: 100%; border-radius: 5px; font-weight: bold; }
+            button:hover { background: #0077b5; }
+            h2 { border-bottom: 1px solid #444; padding-bottom: 10px; }
+            .status { margin-top: 20px; color: #0f0; }
         </style>
     </head>
     <body>
-        <div class="card">
-            <h1>👋 Панель Влада</h1>
+        <div class="container">
+            <h2>🎭 Конструктор Персонажа</h2>
             
-            <p style="text-align:center">Выбери настроение Влада:</p>
-            <div class="btn-group">
-                <button class="btn-kind" onclick="setMood('kind')">☺️ Добрый</button>
-                <button class="btn-neutral" onclick="setMood('neutral')">😐 Нейтральный</button>
-                <button class="btn-angry" onclick="setMood('angry')">😒 Злой</button>
-            </div>
-
+            <label>Имя персонажа:</label>
+            <input type="text" id="name" value="${CHARACTER_CONFIG.name}">
+            
+            <label>Описание (Кто он?):</label>
+            <textarea id="desc" rows="3">${CHARACTER_CONFIG.description}</textarea>
+            
+            <label>Стиль общения (Как пишет?):</label>
+            <textarea id="style" rows="3">${CHARACTER_CONFIG.style}</textarea>
+            
+            <label>Настроение:</label>
+            <select id="mood">
+                <option value="neutral" ${CHARACTER_CONFIG.mood === 'neutral' ? 'selected' : ''}>Нейтральное</option>
+                <option value="kind" ${CHARACTER_CONFIG.mood === 'kind' ? 'selected' : ''}>Доброе</option>
+                <option value="angry" ${CHARACTER_CONFIG.mood === 'angry' ? 'selected' : ''}>Злое</option>
+            </select>
+            
+            <button onclick="saveConfig()">💾 СОХРАНИТЬ И ПРИМЕНИТЬ</button>
+            
             <div class="status">
-                <strong>📊 Активность:</strong><br>
-                Текущий режим: <span id="currentMood">${MOOD}</span><br>
-                Чаты (ID): ${chatsList}
+                <p>Сервер жив ✅</p>
+                <p>Активных диалогов в памяти: ${Object.keys(chatMemory).length}</p>
             </div>
         </div>
 
         <script>
-            async function setMood(mood) {
-                await fetch('/api/set-mood', {
+            async function saveConfig() {
+                const config = {
+                    name: document.getElementById('name').value,
+                    description: document.getElementById('desc').value,
+                    style: document.getElementById('style').value,
+                    mood: document.getElementById('mood').value
+                };
+                
+                const res = await fetch('/api/update-char', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ mood })
+                    body: JSON.stringify(config)
                 });
-                document.getElementById('currentMood').innerText = mood;
-                alert('Настроение изменено!');
+                
+                if(res.ok) alert('Персонаж обновлен! Теперь он общается по-новому.');
             }
         </script>
     </body>
@@ -202,9 +204,9 @@ app.get('/', (req, res) => {
     `);
 });
 
-app.post('/api/set-mood', (req, res) => {
-    MOOD = req.body.mood;
-    console.log(`🎭 Настроение Влада изменено на: ${MOOD}`);
+app.post('/api/update-char', (req, res) => {
+    CHARACTER_CONFIG = req.body;
+    console.log("🎭 Персонаж обновлен:", CHARACTER_CONFIG.name);
     res.json({ status: 'ok' });
 });
 
@@ -213,9 +215,8 @@ app.get('/health', (req, res) => res.json({ status: 'alive' }));
 
 setInterval(() => {
     axios.get(`http://localhost:${PORT}/health`).catch(() => {});
-    console.log("💤 Пинг... Влад не спит.");
 }, 300000); // 5 минут
 
 app.listen(PORT, () => {
-    console.log(`🌐 Админка Влада: http://localhost:${PORT}`);
+    console.log(`🌐 Admin Panel: http://localhost:${PORT}`);
 });
