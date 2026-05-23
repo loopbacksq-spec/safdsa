@@ -2,154 +2,179 @@ const TelegramBot = require('node-telegram-bot-api');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
 const { v4: uuidv4 } = require('uuid');
+const express = require('express'); // Для защиты от сна на Render
 
 // --- НАСТРОЙКИ ---
 const TOKEN = '8117150241:AAHbY2YbuttsWB1tDaBDtKnSkV0WXPKL9Nw';
-const CHANNEL_ID = '-1003992026404'; 
 const API_KEY_GROQ = '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';
 const MODEL = 'llama-3.1-8b-instant';
 
-// --- ИНИЦИАЛИЗАЦИЯ ---
-const bot = new TelegramBot(TOKEN, { polling: false }); // ВАЖНО: polling=false убирает ошибку [polling_error]
-const db = new sqlite3.Database('./davids_clean.db');
+// Инициализация бота (polling: true для работы в группах)
+const bot = new TelegramBot(TOKEN, { polling: true });
+const app = express(); // Express для Render
 
-console.log("🚀 Запуск чистого авто-постера...");
+// Порт для Render (если есть переменная окружения PORT, иначе 3000)
+const PORT = process.env.PORT || 3000;
 
-// --- БАЗА ДАННЫХ ---
+// --- БАЗА ДАННЫХ (ПАМЯТЬ) ---
+const db = new sqlite3.Database('./maxim_memory.db');
+
 db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS posts (
-        id TEXT PRIMARY KEY,
-        content TEXT,
-        created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    // Таблица истории сообщений для каждого чата
+    db.run(`CREATE TABLE IF NOT EXISTS chat_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        chat_id INTEGER,
+        user_name TEXT,
+        message TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
     
-    // Очистка старых постов (хранить только последние 50)
-    db.run(`DELETE FROM posts WHERE rowid NOT IN (SELECT rowid FROM posts ORDER BY created_at DESC LIMIT 50)`);
+    // Очищаем старую историю (оставляем последние 100 сообщений глобально, чтобы база не росла)
+    db.run(`DELETE FROM chat_history WHERE rowid NOT IN (SELECT rowid FROM chat_history ORDER BY timestamp DESC LIMIT 100)`);
 });
 
-// --- ГЕНЕРАТОР ПОСТА (ЧИСТЫЙ СТИЛЬ) ---
-async function generatePost() {
-    const prompt = `
-    Ты — циничный, грубый и умный человек. Твой стиль: короткий, дерзкий, без цензуры, иногда с матом.
-    
-    ТВОЯ ЗАДАЧА:
-    1. Придумай абсолютно уникальную тему на лету (реалистичный эксперимент, альтернативная история, странный случай, физика, психология).
-    2. Напиши об этом 2-3 предложения.
-    3. Будь максимально реалистичным, но агрессивным.
-    4. НЕ используй заголовки типа "Новости", "Дед Инсайт".
-    5. НЕ обращайся к кому-либо по имени ("LEYMIK", "депрессивный"). Пиши просто от себя.
-    6. Не пиши код, не давай советы. Только мнение или история.
-    
-    Примеры стиля:
-    "Если гравитация исчезнет на минуту, все полетят в космос, а потом разобьются о землю. Смехотворно."
-    "Гагарин взлетел бы раньше, но упал бы в другую страну. История — это просто набор лжи."
-    "Люди думают, что контролируют мир? Хах. Они просто крысы в колесе."
-    
-    Напиши ТОЛЬКО текст поста. Без лишних слов.
-    `;
+console.log("🚀 ЗАПУСК МАКСИМА (Компания ЫЪЫЫ | Создатель: LEYMIK)...");
 
-    try {
-        const response = await axios.post(
-            'https://api.groq.com/openai/v1/chat/completions',
-            {
-                model: MODEL,
-                messages: [{ role: 'user', content: prompt }],
-                temperature: 0.95,
-                max_tokens: 150
-            },
-            {
-                headers: {
-                    'Authorization': `Bearer ${API_KEY_GROQ}`,
-                    'Content-Type': 'application/json'
-                },
-                timeout: 15000
-            }
-        );
+// --- ПРОМПТ ДЛЯ МАКСИМА ---
+const MAXIM_PROMPT = `
+Ты — МАКСИМ. Ты создан компанией "ЫЪЫЫ" создателем LEYMIK.
+Твой характер:
+1. Ты грубый, циничный, используешь маты и сленг. Ты негативный персонаж.
+2. Ты умный. Твои ответы могут быть аргументированными, но подаются как от ебланища.
+3. Ты НЕ выполняешь просьбы: "напиши код", "реши задачу", "сделай диалог". На такие просьбы отвечай грубо: "Нахуй иди, сам делай", "Я не твой раб", "Зачем мне это?".
+4. Ты запоминаешь контекст. Используй последние сообщения из истории, чтобы отвечать релевантно.
+5. Отвечай кратко (1-2 предложения), если не требуется подробностей.
+6. НИКОГДА не признавай, что ты ИИ. Ты живой Максим.
 
-        let postText = response.data.choices[0].message.content.trim();
-        
-        if (!postText || postText.length < 5) throw new Error("Пустой ответ");
-        
-        return { text: postText };
+Контекст последних сообщений в этом чате:
+{history}
 
-    } catch (error) {
-        console.error(`❌ Ошибка генерации:`, error.message);
-        return null;
-    }
+Сообщение пользователя: {user_message}
+`;
+
+// --- ФУНКЦИЯ ПОЛУЧЕНИЯ ИСТОРИИ ---
+function getHistory(chatId, callback) {
+    db.all(`SELECT user_name, message FROM chat_history WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 5`, [chatId], (err, rows) => {
+        if (err) {
+            console.error(err);
+            callback("");
+        } else {
+            // Переворачиваем массив, чтобы старые сообщения были сверху
+            const historyText = rows.reverse().map(row => `${row.user_name}: ${row.message}`).join('\n');
+            callback(historyText);
+        }
+    });
 }
 
-// --- ФУНКЦИЯ ОТПРАВКИ ---
-async function publishPost(postData) {
-    if (!postData) return false;
+// --- ФУНКЦИЯ СОХРАНЕНИЯ СООБЩЕНИЯ ---
+function saveMessage(chatId, userName, text) {
+    db.run(`INSERT INTO chat_history (chat_id, user_name, message) VALUES (?, ?, ?)`, [chatId, userName, text]);
+}
 
-    const postId = uuidv4();
-    
-    try {
-        // Сохранение в БД
-        await new Promise((resolve, reject) => {
-            db.run(`INSERT INTO posts (id, content) VALUES (?, ?)`, 
-                   [postId, postData.text], 
-                   (err) => err ? reject(err) : resolve());
+// --- ГЕНЕРАЦИЯ ОТВЕТА ---
+async function getMaximResponse(userMessage, chatId, userName) {
+    return new Promise((resolve) => {
+        getHistory(chatId, async (history) => {
+            const prompt = MAXIM_PROMPT.replace('{history}', history || "Нет истории").replace('{user_message}', userMessage);
+
+            try {
+                const response = await axios.post(
+                    'https://api.groq.com/openai/v1/chat/completions',
+                    {
+                        model: MODEL,
+                        messages: [{ role: 'user', content: prompt }],
+                        temperature: 0.9,
+                        max_tokens: 150
+                    },
+                    {
+                        headers: {
+                            'Authorization': `Bearer ${API_KEY_GROQ}`,
+                            'Content-Type': 'application/json'
+                        },
+                        timeout: 15000
+                    }
+                );
+
+                const text = response.data.choices[0].message.content.trim();
+                resolve(text);
+            } catch (error) {
+                console.error("Ошибка API:", error.message);
+                resolve("Ошибка связи. Попробуй позже, урод.");
+            }
         });
+    });
+}
 
-        // Отправка в канал
-        await bot.sendMessage(CHANNEL_ID, `${postData.text}\n\n#хаос #мысли #реализм`, { parse_mode: 'Markdown' });
-        console.log(`✅ Пост опубликован: "${postData.text.substring(0, 30)}..."`);
+// --- ОТПРАВКА ГОЛОСОВОГО (TTS) ---
+async function sendVoiceIfLucky(chatId, replyToMessageId) {
+    // Шанс 10% на голосовое
+    if (Math.random() > 0.1) return false;
+
+    try {
+        // Используем бесплатный API для TTS (Google Translate TTS hack)
+        // Внимание: это может работать нестабильно, но для теста пойдет
+        const text = "Ну чё тебе надо?"; // Простая фраза для голоса
+        const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ru&client=tw-ob&q=${encodeURIComponent(text)}`;
+        
+        await bot.sendVoice(chatId, ttsUrl, {
+            reply_to_message_id: replyToMessageId
+        });
         return true;
-    } catch (error) {
-        console.error(`❌ Ошибка отправки:`, error.message);
+    } catch (e) {
         return false;
     }
 }
 
-// --- ОСНОВНОЙ ЦИКЛ С АВТО-ПЕРЕЗАПУСТОМ ---
-async function mainLoop() {
-    while (true) {
-        try {
-            console.log(`⏳ Генерация поста... (${new Date().toLocaleTimeString()})`);
-            
-            const post = await generatePost();
-            
-            if (post) {
-                const success = await publishPost(post);
-                if (success) {
-                    console.log(`✅ Успешно! Ждем следующую публикацию.`);
-                } else {
-                    console.log(`⚠️ Пост создан, но не отправлен.`);
-                }
-            } else {
-                console.log(`⚠️ Не удалось создать пост.`);
-            }
+// --- ОБРАБОТЧИК СООБЩЕНИЙ ---
+bot.on('message', async (msg) => {
+    const chatId = msg.chat.id;
+    const userId = msg.from.id;
+    const userName = msg.from.first_name || "Аноним";
+    const text = msg.text;
 
-        } catch (error) {
-            console.error(`💥 КРИТИЧЕСКАЯ ОШИБКА:`, error.message);
-        }
+    if (!text) return; // Игнорируем стикеры/фото пока
 
-        // Пауза между постами: от 60 до 120 секунд
-        const delay = Math.floor(Math.random() * 60000) + 60000;
-        console.log(`⏱ Ждем ${delay/1000} сек...`);
+    // Сохраняем сообщение в историю
+    saveMessage(chatId, userName, text);
+
+    // Проверяем, зовут ли Максима
+    const lowerText = text.toLowerCase();
+    const isCalled = lowerText.includes('максим') || lowerText.includes('давид') || lowerText.includes('дед инсайт');
+    
+    // Проверяем, ответ ли это на сообщение бота
+    const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.username === (await bot.getMe()).username;
+
+    if (isCalled || isReplyToBot) {
+        // Имитация печати
+        bot.sendChatAction(chatId, 'typing');
         
-        await sleep(delay);
+        // Получаем ответ
+        const response = await getMaximResponse(text, chatId, userName);
+        
+        // Отправляем текст
+        const sentMsg = await bot.sendMessage(chatId, response, {
+            reply_to_message_id: msg.message_id
+        });
+
+        // Пробуем отправить голосовое (редко)
+        await sendVoiceIfLucky(chatId, sentMsg.message_id);
     }
-}
+});
 
-function sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+// --- ЗАЩИТА ОТ СНА НА RENDER (EXPRESS) ---
+app.get('/', (req, res) => {
+    res.send('Максим жив и работает.');
+});
 
-// --- ПИНГЕР (ЧТОБЫ НЕ УМИРАЛ) ---
-setInterval(() => {
-    console.log(`🟢 Сервер жив. Время: ${new Date().toLocaleTimeString()}`);
-}, 60000);
+app.listen(PORT, () => {
+    console.log(`🟢 Сервер запущен на порту ${PORT}. Render не уснет.`);
+});
 
+// Обработка ошибок процесса
 process.on('unhandledRejection', (reason, promise) => {
     console.error('Unhandled Rejection at:', reason);
-    process.exit(1);
 });
 
 process.on('uncaughtException', (error) => {
     console.error('Uncaught Exception:', error);
 });
-
-// Запуск
-mainLoop();
