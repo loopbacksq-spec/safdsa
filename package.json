@@ -1,19 +1,19 @@
 {
-  "name": "maxim-bot-render",
-  "version": "1.0.0",
-  "description": "Грубый бот Максим от компании ЫЪЫЫ (Creator: LEYMIK)",
+  "name": "maxim-admin-bot",
+  "version": "2.0.0",
+  "description": "Maxim/David Bot with Admin Panel & Anti-Sleep",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
   },
-  "keywords": ["telegram", "bot", "groq", "rude", "maxim"],
+  "keywords": ["telegram", "bot", "admin", "groq"],
   "author": "LEYMIK",
   "license": "ISC",
   "dependencies": {
     "node-telegram-bot-api": "^0.64.0",
     "axios": "^1.6.2",
     "sqlite3": "^5.1.6",
-    "uuid": "^9.0.0",
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "body-parser": "^1.20.2"
   }
 }
