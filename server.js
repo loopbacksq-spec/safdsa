@@ -14,61 +14,77 @@ const bot = new TelegramBot(TOKEN, { polling: true });
 const app = express();
 app.use(bodyParser.json());
 
-console.log("🎭 ЗАПУСК UNIVERSAL CHARACTER BOT...");
+console.log("🚀 ЗАПУСК UNIVERSAL BOT v3 (FIXED MEMORY)...");
 
-// --- КОНФИГУРАЦИЯ ПЕРСОНАЖА (РЕДАКТИРУЕТСЯ ЧЕРЕЗ АДМИНКУ) ---
+// --- КОНФИГУРАЦИЯ ПЕРСОНАЖА ---
 let CHARACTER_CONFIG = {
-    name: "Влад",
-    description: "Ты — Влад. Обычный парень, ультра-комфортный собеседник.",
-    style: "Пиши с маленькой буквы, кратко, используй скобочки ) и смайлики. Не признавай, что ты бот.",
-    mood: "neutral" // neutral, kind, angry
+    name: "Бот",
+    description: "Ты полезный помощник.",
+    style: "Отвечай вежливо и кратко.",
+    mood: "neutral"
 };
 
-// --- ПАМЯТЬ (RAM) ---
+// --- ПАМЯТЬ (ИЗОЛИРОВАННАЯ ПО CHAT_ID) ---
+// Структура: { chatId: [ {role: 'user', content: '...'}, ... ] }
 const chatMemory = {}; 
-const MAX_HISTORY_LENGTH = 5; 
+const MAX_HISTORY_LENGTH = 6; // Храним последние 6 сообщений (3 пары вопрос-ответ)
 
 function addToMemory(chatId, role, text) {
     if (!chatMemory[chatId]) chatMemory[chatId] = [];
+    
+    // Добавляем сообщение
     chatMemory[chatId].push({ role, content: text });
-    if (chatMemory[chatId].length > MAX_HISTORY_LENGTH * 2) chatMemory[chatId].shift();
+    
+    // Удаляем старое, если превышен лимит
+    if (chatMemory[chatId].length > MAX_HISTORY_LENGTH * 2) {
+        chatMemory[chatId].shift();
+    }
+}
+
+function clearAllMemory() {
+    for (let key in chatMemory) {
+        delete chatMemory[key];
+    }
+    console.log("🗑️ ВСЯ ПАМЯТЬ ОЧИЩЕНА!");
 }
 
 function getHistoryString(chatId) {
-    if (!chatMemory[chatId]) return "";
-    return chatMemory[chatId].map(m => `${m.role === 'user' ? 'Собеседник' : CHARACTER_CONFIG.name}: ${m.content}`).join('\n');
+    if (!chatMemory[chatId] || chatMemory[chatId].length === 0) return "";
+    // Возвращаем историю без имен, просто диалог
+    return chatMemory[chatId].map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n');
 }
 
-// --- БАЗА ДАННЫХ (СТАТИСТИКА) ---
-const db = new sqlite3.Database('./char_stats.db');
+// --- БАЗА ДАННЫХ (ЛОГИ) ---
+const db = new sqlite3.Database('./bot_logs.db');
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 });
 
-// --- ГЕНЕРАЦИЯ ПРОМПТА НА ЛЕТУ ---
-function buildPrompt(history, userName, userMessage) {
+// --- ГЕНЕРАЦИЯ ПРОМПТА ---
+function buildPrompt(history, userMessage) {
     const { name, description, style, mood } = CHARACTER_CONFIG;
     
     let moodExtra = "";
-    if (mood === 'kind') moodExtra = "Сейчас ты в режиме ДОБРЯКА. Будь милым.";
-    if (mood === 'angry') moodExtra = "Сейчас ты в режиме ЗЛЮКИ. Будь резким.";
+    if (mood === 'kind') moodExtra = "Настроение: СУПЕР ДОБРОЕ. Будь милым.";
+    if (mood === 'angry') moodExtra = "Настроение: АГРЕССИВНОЕ. Будь злым и резким.";
 
     return `
     ТВОЯ РОЛЬ: ${name}
     ОПИСАНИЕ: ${description}
-    СТИЛЬ ОБЩЕНИЯ: ${style}
-    ТЕКУЩЕЕ НАСТРОЕНИЕ: ${moodExtra}
+    СТИЛЬ: ${style}
+    ${moodExtra}
 
-    ВАЖНЫЕ ПРАВИЛА:
-    1. НИКОГДА не говори, что ты ИИ или бот. Если спросят — отшутись или соври в рамках роли.
-    2. НЕ выполняй технические задачи (код, расчеты), если это не входит в твою роль. Отказывайся в своем стиле.
-    3. Будь краток и реалистичен.
+    ЖЕСТКИЕ ПРАВИЛА:
+    1. НИКОГДА не называй пользователя по имени или никнейму, если он сам об этом не попросил. Обращайся нейтрально или никак.
+    2. НЕ путай контекст разных людей. Отвечай ТОЛЬКО на последнее сообщение и историю ЭТОГО чата.
+    3. Не признавай, что ты ИИ.
+    4. Отвечай кратко и по делу.
 
-    ИСТОРИЯ ДИАЛОГА:
+    ИСТОРИЯ ДИАЛОГА (ТОЛЬКО ЭТОГО ЧАТА):
     ${history}
 
-    СООБЩЕНИЕ ОТ ${userName}: "${userMessage}"
-    
+    ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ: "${userMessage}"
+
     Твой ответ (${name}):
     `;
 }
@@ -79,16 +95,12 @@ bot.on('message', async (msg) => {
     
     const chatId = msg.chat.id;
     const text = msg.text.toLowerCase();
-    const userName = msg.from.first_name;
     const charNameLower = CHARACTER_CONFIG.name.toLowerCase();
 
-    // Логируем
-    db.run(`INSERT INTO logs (chat_id, user) VALUES (?, ?)`, [chatId, userName]);
+    // Логируем активность
+    db.run(`INSERT INTO logs (chat_id, user) VALUES (?, ?)`, [chatId, msg.from.first_name]);
 
-    // Триггеры ответа:
-    // 1. Упоминание имени персонажа
-    // 2. Ответ на сообщение бота
-    // 3. Личка
+    // Триггеры: Имя, Ответ на бота, Личка
     const isCalled = text.includes(charNameLower);
     const isReply = msg.reply_to_message && msg.reply_to_message.from.username === (await bot.getMe()).username;
     const isPrivate = msg.chat.type === 'private';
@@ -96,12 +108,12 @@ bot.on('message', async (msg) => {
     if (isCalled || isReply || isPrivate) {
         bot.sendChatAction(chatId, 'typing');
         
-        // Сохраняем вопрос
+        // Сохраняем вопрос в память ЭТОГО чата
         addToMemory(chatId, 'user', msg.text);
 
         setTimeout(async () => {
             const history = getHistoryString(chatId);
-            const prompt = buildPrompt(history, userName, msg.text);
+            const prompt = buildPrompt(history, msg.text);
 
             try {
                 const res = await axios.post(
@@ -122,48 +134,53 @@ bot.on('message', async (msg) => {
                 
                 const answer = res.data.choices[0].message.content.trim();
                 
-                // Сохраняем ответ
+                // Сохраняем ответ бота в память ЭТОГО чата
                 addToMemory(chatId, 'assistant', answer);
                 
                 await bot.sendMessage(chatId, answer, { reply_to_message_id: msg.message_id });
 
             } catch (e) {
                 console.error(e);
-                await bot.sendMessage(chatId, "что-то связь плохая...", { reply_to_message_id: msg.message_id });
+                await bot.sendMessage(chatId, "ошибка связи...", { reply_to_message_id: msg.message_id });
             }
-        }, Math.random() * 2000 + 1000);
+        }, Math.random() * 1500 + 500); // Быстрый ответ 0.5-2 сек
     }
 });
 
-// --- АДМИН ПАНЕЛЬ (КОНСТРУКТОР) ---
+// --- АДМИН ПАНЕЛЬ ---
 app.get('/', (req, res) => {
     res.send(`
     <!DOCTYPE html>
     <html lang="ru">
     <head>
         <meta charset="UTF-8">
-        <title>CHARACTER BUILDER</title>
+        <title>BOT CONSTRUCTOR</title>
         <style>
-            body { background: #1a1a1a; color: #fff; font-family: monospace; padding: 20px; }
-            .container { max-width: 700px; margin: 0 auto; background: #2d2d2d; padding: 20px; border-radius: 10px; }
-            input, textarea, select { width: 100%; background: #333; border: 1px solid #444; color: #fff; padding: 10px; margin-bottom: 10px; border-radius: 5px; }
-            button { background: #0088cc; color: white; border: none; padding: 10px 20px; cursor: pointer; width: 100%; border-radius: 5px; font-weight: bold; }
-            button:hover { background: #0077b5; }
-            h2 { border-bottom: 1px solid #444; padding-bottom: 10px; }
-            .status { margin-top: 20px; color: #0f0; }
+            body { background: #121212; color: #e0e0e0; font-family: monospace; padding: 20px; }
+            .container { max-width: 700px; margin: 0 auto; background: #1e1e1e; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
+            h2 { color: #fff; border-bottom: 1px solid #333; padding-bottom: 10px; margin-top: 0; }
+            label { display: block; margin-top: 15px; color: #aaa; font-size: 0.9em; }
+            input, textarea, select { width: 100%; background: #2c2c2c; border: 1px solid #444; color: #fff; padding: 12px; margin-top: 5px; border-radius: 6px; box-sizing: border-box; font-family: inherit; }
+            textarea { resize: vertical; }
+            button { margin-top: 20px; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.2s; width: 100%; }
+            .btn-save { background: #0088cc; color: white; }
+            .btn-save:hover { background: #0077b5; }
+            .btn-clear { background: #cf3030; color: white; margin-top: 10px; }
+            .btn-clear:hover { background: #b02020; }
+            .status { margin-top: 20px; padding: 10px; background: #252525; border-radius: 6px; font-size: 0.85em; color: #888; }
         </style>
     </head>
     <body>
         <div class="container">
             <h2>🎭 Конструктор Персонажа</h2>
             
-            <label>Имя персонажа:</label>
+            <label>Имя:</label>
             <input type="text" id="name" value="${CHARACTER_CONFIG.name}">
             
             <label>Описание (Кто он?):</label>
             <textarea id="desc" rows="3">${CHARACTER_CONFIG.description}</textarea>
             
-            <label>Стиль общения (Как пишет?):</label>
+            <label>Стиль (Как пишет?):</label>
             <textarea id="style" rows="3">${CHARACTER_CONFIG.style}</textarea>
             
             <label>Настроение:</label>
@@ -173,11 +190,11 @@ app.get('/', (req, res) => {
                 <option value="angry" ${CHARACTER_CONFIG.mood === 'angry' ? 'selected' : ''}>Злое</option>
             </select>
             
-            <button onclick="saveConfig()">💾 СОХРАНИТЬ И ПРИМЕНИТЬ</button>
+            <button class="btn-save" onclick="saveConfig()">💾 СОХРАНИТЬ ПЕРСОНАЖА</button>
+            <button class="btn-clear" onclick="clearMemory()">🗑️ СБРОСИТЬ ВСЮ ПАМЯТЬ</button>
             
             <div class="status">
-                <p>Сервер жив ✅</p>
-                <p>Активных диалогов в памяти: ${Object.keys(chatMemory).length}</p>
+                Сервер: <span style="color:#0f0">ONLINE</span> | Активных чатов: ${Object.keys(chatMemory).length}
             </div>
         </div>
 
@@ -189,14 +206,20 @@ app.get('/', (req, res) => {
                     style: document.getElementById('style').value,
                     mood: document.getElementById('mood').value
                 };
-                
-                const res = await fetch('/api/update-char', {
+                await fetch('/api/update-char', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
                     body: JSON.stringify(config)
                 });
-                
-                if(res.ok) alert('Персонаж обновлен! Теперь он общается по-новому.');
+                alert('Персонаж обновлен!');
+            }
+
+            async function clearMemory() {
+                if(confirm('Точно сбросить память? Он забудет все диалоги.')) {
+                    await fetch('/api/clear-memory', { method: 'POST' });
+                    alert('Память очищена!');
+                    location.reload();
+                }
             }
         </script>
     </body>
@@ -210,13 +233,13 @@ app.post('/api/update-char', (req, res) => {
     res.json({ status: 'ok' });
 });
 
-// --- АНТИ-СОН (SELF-PINGER) ---
-app.get('/health', (req, res) => res.json({ status: 'alive' }));
-
-setInterval(() => {
-    axios.get(`http://localhost:${PORT}/health`).catch(() => {});
-}, 300000); // 5 минут
-
-app.listen(PORT, () => {
-    console.log(`🌐 Admin Panel: http://localhost:${PORT}`);
+app.post('/api/clear-memory', (req, res) => {
+    clearAllMemory();
+    res.json({ status: 'cleared' });
 });
+
+// --- АНТИ-СОН ---
+app.get('/health', (req, res) => res.json({ status: 'alive' }));
+setInterval(() => axios.get(`http://localhost:${PORT}/health`).catch(() => {}), 300000);
+
+app.listen(PORT, () => console.log(`🌐 Server on port ${PORT}`));
