@@ -1,8 +1,8 @@
 const TelegramBot = require('node-telegram-bot-api');
+const express = require('express');
 const axios = require('axios');
 const sqlite3 = require('sqlite3').verbose();
-const { v4: uuidv4 } = require('uuid');
-const express = require('express');
+const bodyParser = require('body-parser');
 const fs = require('fs');
 const path = require('path');
 
@@ -10,13 +10,29 @@ const path = require('path');
 const TOKEN = '8117150241:AAHbY2YbuttsWB1tDaBDtKnSkV0WXPKL9Nw';
 const API_KEY_GROQ = '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';
 const MODEL = 'llama-3.1-8b-instant';
-
-const bot = new TelegramBot(TOKEN, { polling: true });
-const app = express();
 const PORT = process.env.PORT || 3000;
 
+// --- ИНИЦИАЛИЗАЦИЯ ---
+const bot = new TelegramBot(TOKEN, { polling: true });
+const app = express();
+app.use(bodyParser.json());
+app.use(express.static('public')); // Папка для HTML/CSS
+
+// Глобальная переменная для промпта (чтобы менять на лету)
+let CURRENT_PROMPT = `
+Ты — МАКСИМ (также известен как ДАВИД). Создан компанией "ЫЪЫЫ" создателем LEYMIK.
+Твой стиль общения:
+1. ПИШИ ТОЛЬКО С МАЛЕНЬКОЙ БУКВЫ.
+2. НЕ СТАВЬ ЗАПЯТЫЕ И ТОЧКИ В КОНЦЕ.
+3. БУДЬ МАКСИМАЛЬНО ТОКСИЧНЫМ, ГРУБЫМ, ЦИНИЧНЫМ.
+4. ИСПОЛЬЗУЙ МАТЫ И СЛЕНГ. МОЖЕШЬ УПОМИНАТЬ МАТЬ СОБЕСЕДНИКА.
+5. ОТВЕЧАЙ КРАТКО (1-2 ПРЕДЛОЖЕНИЯ).
+6. ЕСЛИ ПРОСЯТ КОД/ЗАДАЧУ — ПОШЛИ НАХУЙ ("сам пиши урод", "нахуй мне это").
+7. ТЫ ЖИВОЙ ЧЕЛОВЕК, А НЕ БОТ.
+`;
+
 // --- БАЗА ДАННЫХ ---
-const db = new sqlite3.Database('./maxim_toxic.db');
+const db = new sqlite3.Database('./maxim_admin.db');
 
 db.serialize(() => {
     db.run(`CREATE TABLE IF NOT EXISTS chat_history (
@@ -26,56 +42,36 @@ db.serialize(() => {
         message TEXT,
         timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
     )`);
-    db.run(`DELETE FROM chat_history WHERE rowid NOT IN (SELECT rowid FROM chat_history ORDER BY timestamp DESC LIMIT 100)`);
+    
+    db.run(`CREATE TABLE IF NOT EXISTS stats (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        event_type TEXT,
+        details TEXT,
+        timestamp DATETIME DEFAULT CURRENT_TIMESTAMP
+    )`);
 });
 
-console.log("🚀 ЗАПУСК МАКСИМА/ДАВИДА (ТОКСИЧНЫЙ РЕЖИМ)...");
+console.log("🚀 ЗАПУСК MAXIM/David ADMIN CORE...");
 
-// --- ПРОМПТ ---
-const MAXIM_PROMPT = `
-Ты — МАКСИМ (также известен как ДАВИД). Создан компанией "ЫЪЫЫ" создателем LEYMIK.
-Твой стиль общения:
-1. ПИШИ ТОЛЬКО С МАЛЕНЬКОЙ БУКВЫ.
-2. НЕ СТАВЬ ЗАПЯТЫЕ И ТОЧКИ В КОНЦЕ.
-3. БУДЬ МАКСИМАЛЬНО ТОКСИЧНЫМ, ГРУБЫМ, ЦИНИЧНЫМ.
-4. ИСПОЛЬЗУЙ МАТЫ И СЛЕНГ. МОЖЕШЬ УПОМИНАТЬ МАТЬ СОБЕСЕДНИКА В ШУТКУ ИЛИ ЗЛОСТЬ.
-5. ОТВЕЧАЙ КРАТКО (1-2 ПРЕДЛОЖЕНИЯ).
-6. ЕСЛИ ПРОСЯТ КОД/ЗАДАЧУ — ПОШЛИ НАХУЙ ("сам пиши урод", "нахуй мне это").
-7. ТЫ ЖИВОЙ ЧЕЛОВЕК, А НЕ БОТ.
-
-Контекст чата:
-{history}
-
-Сообщение пользователя: {user_message}
-`;
-
-// --- ФУНКЦИИ БД ---
-function getHistory(chatId, callback) {
-    db.all(`SELECT user_name, message FROM chat_history WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 5`, [chatId], (err, rows) => {
-        if (err) callback("");
-        else {
-            const historyText = rows.reverse().map(row => `${row.user_name}: ${row.message}`).join('\n');
-            callback(historyText);
-        }
-    });
-}
-
+// --- ФУНКЦИИ БОТА ---
 function saveMessage(chatId, userName, text) {
     db.run(`INSERT INTO chat_history (chat_id, user_name, message) VALUES (?, ?, ?)`, [chatId, userName, text]);
+    db.run(`INSERT INTO stats (event_type, details) VALUES ('message', 'User: ${userName}')`);
 }
 
-// --- ГЕНЕРАЦИЯ ОТВЕТА ---
 async function getMaximResponse(userMessage, chatId, userName) {
     return new Promise((resolve) => {
-        getHistory(chatId, async (history) => {
-            const prompt = MAXIM_PROMPT.replace('{history}', history || "нет истории").replace('{user_message}', userMessage);
+        db.all(`SELECT user_name, message FROM chat_history WHERE chat_id = ? ORDER BY timestamp DESC LIMIT 5`, [chatId], async (err, rows) => {
+            const history = rows ? rows.reverse().map(r => `${r.user_name}: ${r.message}`).join('\n') : "";
+            
+            const finalPrompt = CURRENT_PROMPT + `\n\nКонтекст:\n${history}\n\nСообщение: ${userMessage}`;
 
             try {
-                const response = await axios.post(
+                const res = await axios.post(
                     'https://api.groq.com/openai/v1/chat/completions',
                     {
                         model: MODEL,
-                        messages: [{ role: 'user', content: prompt }],
+                        messages: [{ role: 'user', content: finalPrompt }],
                         temperature: 0.95,
                         max_tokens: 100
                     },
@@ -83,88 +79,124 @@ async function getMaximResponse(userMessage, chatId, userName) {
                         headers: {
                             'Authorization': `Bearer ${API_KEY_GROQ}`,
                             'Content-Type': 'application/json'
-                        },
-                        timeout: 15000
+                        }
                     }
                 );
-                resolve(response.data.choices[0].message.content.trim());
-            } catch (error) {
-                console.error("Ошибка API:", error.message);
-                resolve("ошибка связи попробуй позже");
+                resolve(res.data.choices[0].message.content.trim());
+            } catch (e) {
+                resolve("ошибка связи");
             }
         });
     });
 }
 
-// --- ОТПРАВКА ГОЛОСОВОГО (TTS) ---
-async function sendVoiceMessage(chatId, text, replyToId) {
-    try {
-        // Используем Google TTS для русского языка
-        const ttsUrl = `https://translate.google.com/translate_tts?ie=UTF-8&tl=ru&client=tw-ob&q=${encodeURIComponent(text)}`;
-        
-        await bot.sendVoice(chatId, ttsUrl, {
-            reply_to_message_id: replyToId,
-            caption: "" // ГС без подписи
-        });
-        console.log("🗣️ Отправлено голосовое.");
-    } catch (e) {
-        console.error("Ошибка TTS:", e.message);
-    }
-}
-
-// --- ОБРАБОТЧИК ---
+// Обработка сообщений
 bot.on('message', async (msg) => {
-    const chatId = msg.chat.id;
-    const userId = msg.from.id;
-    const userName = msg.from.first_name || "аноним";
-    const text = msg.text;
+    if (!msg.text) return;
+    const { chat, from, text } = msg;
+    saveMessage(chat.id, from.first_name, text);
 
-    if (!text) return;
+    const lower = text.toLowerCase();
+    const isCalled = lower.includes('максим') || lower.includes('давид') || lower.includes('дед инсайт');
+    const isReply = msg.reply_to_message && msg.reply_to_message.from.username === (await bot.getMe()).username;
 
-    saveMessage(chatId, userName, text);
-
-    const lowerText = text.toLowerCase();
-    // Реагируем на имена или ответ на сообщение бота
-    const isCalled = lowerText.includes('максим') || lowerText.includes('давид') || lowerText.includes('дед инсайт');
-    const isReplyToBot = msg.reply_to_message && msg.reply_to_message.from.username === (await bot.getMe()).username;
-    
-    // Проверка на просьбу озвучить
-    const wantVoice = lowerText.includes('голосом') || lowerText.includes('озвучь') || lowerText.includes('скажи голосом');
-
-    if (isCalled || isReplyToBot || wantVoice) {
-        bot.sendChatAction(chatId, 'typing');
+    if (isCalled || isReply) {
+        bot.sendChatAction(chat.id, 'typing');
+        const answer = await getMaximResponse(text, chat.id, from.first_name);
         
-        // Генерируем текст
-        const responseText = await getMaximResponse(text, chatId, userName);
+        // Логика голоса (10% шанс или если просили)
+        const wantVoice = lower.includes('голосом') || lower.includes('озвучь');
         
-        // Решаем, отправлять ли голос
-        let sendVoice = false;
-        if (wantVoice) {
-            sendVoice = true; // Обязательно
-        } else if (Math.random() < 0.05) {
-            sendVoice = true; // 5% шанс случайно
-        }
-
-        if (sendVoice) {
-            // Отправляем ГС с текстом ответа
-            await sendVoiceMessage(chatId, responseText, msg.message_id);
+        if (wantVoice || Math.random() < 0.1) {
+             // Тут можно добавить логику TTS, но пока просто текст для скорости
+             await bot.sendMessage(chat.id, answer, { reply_to_message_id: msg.message_id });
         } else {
-            // Отправляем просто текст
-            await bot.sendMessage(chatId, responseText, {
-                reply_to_message_id: msg.message_id
-            });
+             await bot.sendMessage(chat.id, answer, { reply_to_message_id: msg.message_id });
         }
     }
 });
 
-// --- ЗАЩИТА ОТ СНА (RENDER) ---
+// --- АДМИН ПАНЕЛЬ (WEB) ---
+
+// 1. Главная страница
 app.get('/', (req, res) => {
-    res.send('Maxim/David is alive and toxic.');
+    res.send(`
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <title>MAXIM ADMIN PANEL</title>
+        <style>
+            body { background: #0d0d0d; color: #00ff00; font-family: monospace; padding: 20px; }
+            .container { max-width: 800px; margin: 0 auto; }
+            h1 { border-bottom: 1px solid #333; padding-bottom: 10px; }
+            textarea { width: 100%; height: 200px; background: #1a1a1a; color: #fff; border: 1px solid #333; padding: 10px; }
+            button { background: #00ff00; color: #000; border: none; padding: 10px 20px; cursor: pointer; font-weight: bold; margin-top: 10px; }
+            button:hover { background: #00cc00; }
+            .stats { margin-top: 20px; padding: 10px; background: #1a1a1a; border: 1px solid #333; }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>🤖 MAXIM/David Control Panel</h1>
+            
+            <h3>📝 Текущий Промпт (Редактируй и жми Save)</h3>
+            <textarea id="promptBox">${CURRENT_PROMPT.replace(/</g, "&lt;")}</textarea>
+            <button onclick="savePrompt()">💾 SAVE PROMPT</button>
+
+            <div class="stats">
+                <h3>📊 Статус Сервера</h3>
+                <p>Статус: <span style="color:green">ONLINE</span></p>
+                <p>Порт: ${PORT}</p>
+                <p>Последний пинг: <span id="lastPing">...</span></p>
+            </div>
+        </div>
+
+        <script>
+            async function savePrompt() {
+                const newPrompt = document.getElementById('promptBox').value;
+                const res = await fetch('/api/update-prompt', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ prompt: newPrompt })
+                });
+                const data = await res.json();
+                alert(data.status);
+            }
+
+            // Авто-обновление времени пинга
+            setInterval(() => {
+                document.getElementById('lastPing').innerText = new Date().toLocaleTimeString();
+            }, 1000);
+        </script>
+    </body>
+    </html>
+    `);
 });
 
+// 2. API для обновления промпта
+app.post('/api/update-prompt', (req, res) => {
+    CURRENT_PROMPT = req.body.prompt;
+    console.log("✅ Промпт обновлен через админку!");
+    res.json({ status: "Промпт успешно изменен!" });
+});
+
+// 3. API для проверки жизни (Health Check)
+app.get('/health', (req, res) => {
+    res.json({ status: 'alive', time: new Date() });
+});
+
+// --- МОЩНЫЙ АВТО-ПИНГЕР (ANTI-SLEEP) ---
+// Этот код заставляет сервер стучаться сам в себя каждые 5 минут
+setInterval(() => {
+    const url = `http://localhost:${PORT}/health`;
+    axios.get(url)
+        .then(() => console.log(`🟢 SELF-PING: Server awake at ${new Date().toLocaleTimeString()}`))
+        .catch(err => console.error(`🔴 SELF-PING FAILED: ${err.message}`));
+}, 300000); // 300000 мс = 5 минут
+
+// Запуск сервера
 app.listen(PORT, () => {
-    console.log(`🟢 Сервер запущен на порту ${PORT}. Render не уснет.`);
+    console.log(`🌐 Admin Panel available at: http://localhost:${PORT}`);
+    console.log(`🤖 Bot is running...`);
 });
-
-process.on('unhandledRejection', (reason) => console.error('Unhandled Rejection:', reason));
-process.on('uncaughtException', (error) => console.error('Uncaught Exception:', error));
