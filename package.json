@@ -1,19 +1,22 @@
 {
-  "name": "maxim-admin-bot",
-  "version": "2.0.0",
-  "description": "Maxim/David Bot with Admin Panel & Anti-Sleep",
+  "name": "vexa-ai-bot",
+  "version": "1.0.0",
+  "description": "Vexa AI - Умный помощник для групп с памятью и характером",
   "main": "server.js",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "dev": "node server.js"
   },
-  "keywords": ["telegram", "bot", "admin", "groq"],
-  "author": "LEYMIK",
+  "keywords": [
+    "telegram",
+    "bot",
+    "ai",
+    "vexa",
+    "group-assistant"
+  ],
+  "author": "Leym",
   "license": "ISC",
   "dependencies": {
-    "node-telegram-bot-api": "^0.64.0",
-    "axios": "^1.6.2",
-    "sqlite3": "^5.1.6",
-    "express": "^4.18.2",
-    "body-parser": "^1.20.2"
+    "telegraf": "^4.15.3"
   }
 }
