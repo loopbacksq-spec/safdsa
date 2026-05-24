@@ -1,7 +1,7 @@
 {
   "name": "vexa-ai-bot",
   "version": "1.0.0",
-  "description": "Vexa AI Telegram Bot with Memory and Character",
+  "description": "Vexa AI Telegram Bot",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
