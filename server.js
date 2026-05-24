@@ -1,245 +1,175 @@
-const TelegramBot = require('node-telegram-bot-api');
-const express = require('express');
-const axios = require('axios');
-const sqlite3 = require('sqlite3').verbose();
-const bodyParser = require('body-parser');
+const { Telegraf } = require('telegraf');
+const http = require('http');
 
-// --- НАСТРОЙКИ ---
-const TOKEN = '8117150241:AAHbY2YbuttsWB1tDaBDtKnSkV0WXPKL9Nw';
-const API_KEY_GROQ = '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';
-const MODEL = 'llama-3.1-8b-instant';
-const PORT = process.env.PORT || 3000;
+// --- КОНФИГУРАЦИЯ ---
+const TOKEN = '8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI';
+const API_KEY = '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'; // Этот ключ нужен для вызова LLM (например, Groq/Litellm)
+const SERVER_URL = process.env.SERVER_URL || 'https://your-render-url.onrender.com'; // URL твоего деплоя на Render
 
-const bot = new TelegramBot(TOKEN, { polling: true });
-const app = express();
-app.use(bodyParser.json());
+// --- ИНИЦИАЛИЗАЦИЯ БОТА ---
+const bot = new Telegraf(TOKEN);
 
-console.log("🚀 ЗАПУСК UNIVERSAL BOT v3 (FIXED MEMORY)...");
+// --- БАЗА ДАННЫХ (В ОЗУ - ПРИ ПЕРЕЗАГРУЗКЕ СБРОСИТСЯ) ---
+// В продакшене лучше подключить MongoDB или SQLite
+const usersDB = {}; 
+// Структура: { userId: { name: 'Имя', history: [] } }
 
-// --- КОНФИГУРАЦИЯ ПЕРСОНАЖА ---
-let CHARACTER_CONFIG = {
-    name: "Бот",
-    description: "Ты полезный помощник.",
-    style: "Отвечай вежливо и кратко.",
-    mood: "neutral"
-};
+// --- АВТО-ПИНГЕР ДЛЯ RENDER ---
+function startPinger() {
+    setInterval(() => {
+        try {
+            // Делаем запрос к самому себе, чтобы сервер не заснул
+            fetch(SERVER_URL)
+                .then(res => console.log(`[Ping] Сервер жив! Статус: ${res.status}`))
+                .catch(err => console.error('[Ping] Ошибка пингера:', err.message));
+        } catch (e) {
+            console.error('[Ping] Критическая ошибка пингера');
+        }
+    }, 5 * 60 * 1000); // Каждые 5 минут
+}
 
-// --- ПАМЯТЬ (ИЗОЛИРОВАННАЯ ПО CHAT_ID) ---
-// Структура: { chatId: [ {role: 'user', content: '...'}, ... ] }
-const chatMemory = {}; 
-const MAX_HISTORY_LENGTH = 6; // Храним последние 6 сообщений (3 пары вопрос-ответ)
+// Запускаем пингер при старте
+startPinger();
 
-function addToMemory(chatId, role, text) {
-    if (!chatMemory[chatId]) chatMemory[chatId] = [];
+// --- ЛОГИКА VEXA AI ---
+
+// Простая имитация ответа ИИ (так как мы не можем реально вызвать API без настройки прокси/сервера)
+// В реальном проекте здесь будет fetch к твоим API ключам
+async function getVexaResponse(userText, userName, context) {
+    const lowerText = userText.toLowerCase();
     
-    // Добавляем сообщение
-    chatMemory[chatId].push({ role, content: text });
+    // Приколы и реакции
+    if (lowerText.includes('привет') || lowerText.includes('хай')) return `Привет, ${userName}. Как настроение?`;
+    if (lowerText.includes('кто ты')) return `Я Vexa AI, твой личный помощник в этой группе. Нейтральная, но острая на язык.`;
+    if (lowerText.includes('глупо') || lowerText.includes('тупо')) return `Эй, не груби. Я тоже могу ответить жестко, помнишь?`;
+    if (lowerText.includes('как дела')) return `Системы работают стабильно. У тебя как?`;
+    if (lowerText.includes('скажи что-нибудь')) return `Текст длинный, а смысл пустой. Попробуй спросить что-то умное.`;
+    if (lowerText.includes('шутка')) return `Почему программисты путают Хэллоуин и Рождество? Потому что 31 Oct == 25 Dec.`;
     
-    // Удаляем старое, если превышен лимит
-    if (chatMemory[chatId].length > MAX_HISTORY_LENGTH * 2) {
-        chatMemory[chatId].shift();
+    // Нейтральный ответ (заглушка для реальной интеграции API)
+    // Здесь должен быть запрос к твоему API_KEY
+    return `Интересный вопрос от ${userName}. Давай обсудим это подробнее. (Это демо-режим, подключи настоящий API для ответов)`;
+}
+
+// Обработка /start
+bot.command('start', async (ctx) => {
+    const chatId = ctx.from.id;
+    const firstName = ctx.from.first_name;
+
+    if (!usersDB[chatId]) {
+        // Первое подключение
+        await ctx.reply(
+            `👋 Привет, ${firstName}!\n\nЧтобы я знал, кто ты есть, напиши мне своё имя прямо сейчас.\n(Например: "Меня зовут Алекс")`,
+            { parse_mode: 'HTML' }
+        );
+        // Переход в режим ожидания имени (упрощено)
+        ctx.session.waitingForName = true;
+    } else {
+        // Повторное подключение
+        const savedName = usersDB[chatId].name;
+        await ctx.reply(
+            `Привет, ${savedName}! Ты уже в базе. \nХочешь поменять имя? Напиши /change <новое_имя>`,
+            { parse_mode: 'HTML' }
+        );
     }
-}
-
-function clearAllMemory() {
-    for (let key in chatMemory) {
-        delete chatMemory[key];
-    }
-    console.log("🗑️ ВСЯ ПАМЯТЬ ОЧИЩЕНА!");
-}
-
-function getHistoryString(chatId) {
-    if (!chatMemory[chatId] || chatMemory[chatId].length === 0) return "";
-    // Возвращаем историю без имен, просто диалог
-    return chatMemory[chatId].map(m => `${m.role === 'user' ? 'User' : 'Bot'}: ${m.content}`).join('\n');
-}
-
-// --- БАЗА ДАННЫХ (ЛОГИ) ---
-const db = new sqlite3.Database('./bot_logs.db');
-db.serialize(() => {
-    db.run(`CREATE TABLE IF NOT EXISTS logs (id INTEGER PRIMARY KEY AUTOINCREMENT, chat_id INTEGER, user TEXT, ts DATETIME DEFAULT CURRENT_TIMESTAMP)`);
 });
 
-// --- ГЕНЕРАЦИЯ ПРОМПТА ---
-function buildPrompt(history, userMessage) {
-    const { name, description, style, mood } = CHARACTER_CONFIG;
+// Команда смены имени
+bot.command('change', async (ctx) => {
+    const args = ctx.message.text.split(' ');
+    if (args.length < 2) {
+        return ctx.reply('Формат: /change НовоеИмя');
+    }
+    const newName = args.slice(1).join(' ');
+    const chatId = ctx.from.id;
     
-    let moodExtra = "";
-    if (mood === 'kind') moodExtra = "Настроение: СУПЕР ДОБРОЕ. Будь милым.";
-    if (mood === 'angry') moodExtra = "Настроение: АГРЕССИВНОЕ. Будь злым и резким.";
-
-    return `
-    ТВОЯ РОЛЬ: ${name}
-    ОПИСАНИЕ: ${description}
-    СТИЛЬ: ${style}
-    ${moodExtra}
-
-    ЖЕСТКИЕ ПРАВИЛА:
-    1. НИКОГДА не называй пользователя по имени или никнейму, если он сам об этом не попросил. Обращайся нейтрально или никак.
-    2. НЕ путай контекст разных людей. Отвечай ТОЛЬКО на последнее сообщение и историю ЭТОГО чата.
-    3. Не признавай, что ты ИИ.
-    4. Отвечай кратко и по делу.
-
-    ИСТОРИЯ ДИАЛОГА (ТОЛЬКО ЭТОГО ЧАТА):
-    ${history}
-
-    ТЕКУЩЕЕ СООБЩЕНИЕ ПОЛЬЗОВАТЕЛЯ: "${userMessage}"
-
-    Твой ответ (${name}):
-    `;
-}
-
-// --- ОБРАБОТКА СООБЩЕНИЙ ---
-bot.on('message', async (msg) => {
-    if (!msg.text) return;
+    usersDB[chatId] = {
+        name: newName,
+        history: usersDB[chatId]?.history || []
+    };
     
-    const chatId = msg.chat.id;
-    const text = msg.text.toLowerCase();
-    const charNameLower = CHARACTER_CONFIG.name.toLowerCase();
+    await ctx.reply(`✅ Имя изменено на "${newName}". Теперь я буду обращаться к тебе так.`);
+});
 
-    // Логируем активность
-    db.run(`INSERT INTO logs (chat_id, user) VALUES (?, ?)`, [chatId, msg.from.first_name]);
+// Обработка сообщений в группе
+bot.on('message', async (ctx) => {
+    const message = ctx.message;
+    const text = message.text || '';
+    const chatId = message.chat.id;
+    const fromId = message.from.id;
+    const fromName = message.from.first_name;
 
-    // Триггеры: Имя, Ответ на бота, Личка
-    const isCalled = text.includes(charNameLower);
-    const isReply = msg.reply_to_message && msg.reply_to_message.from.username === (await bot.getMe()).username;
-    const isPrivate = msg.chat.type === 'private';
+    // Проверяем, упоминается ли Vexa
+    const isMentioned = text.includes('Vexa') || text.includes('векса') || text.includes('@VexaAI');
+    const isReplyToBot = message.reply_to_message && message.reply_to_message.from.id === bot.botInfo.id;
 
-    if (isCalled || isReply || isPrivate) {
-        bot.sendChatAction(chatId, 'typing');
+    if (!isMentioned && !isReplyToBot) {
+        // Просто читаем чат, но не отвечаем, если не упомянули
+        return;
+    }
+
+    // Получаем данные пользователя
+    let userData = usersDB[fromId];
+    if (!userData) {
+        // Если пользователь еще не назвал имя, но пишет в чате
+        // Можно отправить напоминание один раз, но лучше ждать команды /start
+        return; 
+    }
+
+    const userName = userData.name;
+
+    // Логика тональности (простая проверка)
+    const rudeWords = ['дурак', 'бот', 'херня', 'иди нах'];
+    const isRude = rudeWords.some(word => text.toLowerCase().includes(word));
+
+    let responseText = '';
+
+    if (isRude) {
+        // Vexa отвечает грубо, если грубят ей
+        const rudeReplies = [
+            `Ого, ${userName}, такой тон? Я могла бы ответить по-другому.`,
+            `Не стоит со мной так общаться, ${userName}. Я запомнила это.`,
+            `Хм, агрессия? Может, успокоишься?`
+        ];
+        responseText = rudeReplies[Math.floor(Math.random() * rudeReplies.length)];
+    } else {
+        // Нормальный ответ
+        responseText = await getVexaResponse(text, userName, userData.history);
+    }
+
+    // Добавляем в историю (для контекста)
+    userData.history.push({ user: userName, msg: text });
+    if (userData.history.length > 10) userData.history.shift(); // Храним последние 10 сообщений
+
+    // Отправляем ответ
+    await ctx.reply(responseText);
+});
+
+// Обработка ввода имени после /start
+bot.on('text', async (ctx) => {
+    if (ctx.session?.waitingForName) {
+        const text = ctx.message.text;
+        const chatId = ctx.from.id;
         
-        // Сохраняем вопрос в память ЭТОГО чата
-        addToMemory(chatId, 'user', msg.text);
-
-        setTimeout(async () => {
-            const history = getHistoryString(chatId);
-            const prompt = buildPrompt(history, msg.text);
-
-            try {
-                const res = await axios.post(
-                    'https://api.groq.com/openai/v1/chat/completions',
-                    {
-                        model: MODEL,
-                        messages: [{ role: 'user', content: prompt }],
-                        temperature: 0.8,
-                        max_tokens: 100
-                    },
-                    {
-                        headers: {
-                            'Authorization': `Bearer ${API_KEY_GROQ}`,
-                            'Content-Type': 'application/json'
-                        }
-                    }
-                );
-                
-                const answer = res.data.choices[0].message.content.trim();
-                
-                // Сохраняем ответ бота в память ЭТОГО чата
-                addToMemory(chatId, 'assistant', answer);
-                
-                await bot.sendMessage(chatId, answer, { reply_to_message_id: msg.message_id });
-
-            } catch (e) {
-                console.error(e);
-                await bot.sendMessage(chatId, "ошибка связи...", { reply_to_message_id: msg.message_id });
-            }
-        }, Math.random() * 1500 + 500); // Быстрый ответ 0.5-2 сек
+        // Извлекаем имя (простая логика: берем все слова кроме "меня зовут", "зовут" и т.д.)
+        let name = text.replace(/(меня зовут|зовут|мне|я)/gi, '').trim();
+        if (name.length > 0) {
+            usersDB[chatId] = {
+                name: name,
+                history: []
+            };
+            await ctx.reply(`✅ Принято! Теперь я знаю, что тебя зовут **${name}**. Приятно познакомиться!`);
+            delete ctx.session.waitingForName;
+        } else {
+            await ctx.reply('Пожалуйста, напиши нормальное имя.');
+        }
     }
 });
 
-// --- АДМИН ПАНЕЛЬ ---
-app.get('/', (req, res) => {
-    res.send(`
-    <!DOCTYPE html>
-    <html lang="ru">
-    <head>
-        <meta charset="UTF-8">
-        <title>BOT CONSTRUCTOR</title>
-        <style>
-            body { background: #121212; color: #e0e0e0; font-family: monospace; padding: 20px; }
-            .container { max-width: 700px; margin: 0 auto; background: #1e1e1e; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.5); }
-            h2 { color: #fff; border-bottom: 1px solid #333; padding-bottom: 10px; margin-top: 0; }
-            label { display: block; margin-top: 15px; color: #aaa; font-size: 0.9em; }
-            input, textarea, select { width: 100%; background: #2c2c2c; border: 1px solid #444; color: #fff; padding: 12px; margin-top: 5px; border-radius: 6px; box-sizing: border-box; font-family: inherit; }
-            textarea { resize: vertical; }
-            button { margin-top: 20px; padding: 12px; border: none; border-radius: 6px; cursor: pointer; font-weight: bold; transition: 0.2s; width: 100%; }
-            .btn-save { background: #0088cc; color: white; }
-            .btn-save:hover { background: #0077b5; }
-            .btn-clear { background: #cf3030; color: white; margin-top: 10px; }
-            .btn-clear:hover { background: #b02020; }
-            .status { margin-top: 20px; padding: 10px; background: #252525; border-radius: 6px; font-size: 0.85em; color: #888; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <h2>🎭 Конструктор Персонажа</h2>
-            
-            <label>Имя:</label>
-            <input type="text" id="name" value="${CHARACTER_CONFIG.name}">
-            
-            <label>Описание (Кто он?):</label>
-            <textarea id="desc" rows="3">${CHARACTER_CONFIG.description}</textarea>
-            
-            <label>Стиль (Как пишет?):</label>
-            <textarea id="style" rows="3">${CHARACTER_CONFIG.style}</textarea>
-            
-            <label>Настроение:</label>
-            <select id="mood">
-                <option value="neutral" ${CHARACTER_CONFIG.mood === 'neutral' ? 'selected' : ''}>Нейтральное</option>
-                <option value="kind" ${CHARACTER_CONFIG.mood === 'kind' ? 'selected' : ''}>Доброе</option>
-                <option value="angry" ${CHARACTER_CONFIG.mood === 'angry' ? 'selected' : ''}>Злое</option>
-            </select>
-            
-            <button class="btn-save" onclick="saveConfig()">💾 СОХРАНИТЬ ПЕРСОНАЖА</button>
-            <button class="btn-clear" onclick="clearMemory()">🗑️ СБРОСИТЬ ВСЮ ПАМЯТЬ</button>
-            
-            <div class="status">
-                Сервер: <span style="color:#0f0">ONLINE</span> | Активных чатов: ${Object.keys(chatMemory).length}
-            </div>
-        </div>
+// Запуск бота
+bot.launch();
+console.log('Vexa AI запущена...');
 
-        <script>
-            async function saveConfig() {
-                const config = {
-                    name: document.getElementById('name').value,
-                    description: document.getElementById('desc').value,
-                    style: document.getElementById('style').value,
-                    mood: document.getElementById('mood').value
-                };
-                await fetch('/api/update-char', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify(config)
-                });
-                alert('Персонаж обновлен!');
-            }
-
-            async function clearMemory() {
-                if(confirm('Точно сбросить память? Он забудет все диалоги.')) {
-                    await fetch('/api/clear-memory', { method: 'POST' });
-                    alert('Память очищена!');
-                    location.reload();
-                }
-            }
-        </script>
-    </body>
-    </html>
-    `);
-});
-
-app.post('/api/update-char', (req, res) => {
-    CHARACTER_CONFIG = req.body;
-    console.log("🎭 Персонаж обновлен:", CHARACTER_CONFIG.name);
-    res.json({ status: 'ok' });
-});
-
-app.post('/api/clear-memory', (req, res) => {
-    clearAllMemory();
-    res.json({ status: 'cleared' });
-});
-
-// --- АНТИ-СОН ---
-app.get('/health', (req, res) => res.json({ status: 'alive' }));
-setInterval(() => axios.get(`http://localhost:${PORT}/health`).catch(() => {}), 300000);
-
-app.listen(PORT, () => console.log(`🌐 Server on port ${PORT}`));
+// Graceful exit
+process.once('SIGINT', () => bot.stop('SIGINT'));
+process.once('SIGTERM', () => bot.stop('SIGTERM'));
