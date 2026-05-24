@@ -1,290 +1,239 @@
 const express = require('express');
 const { Telegraf } = require('telegraf');
 const Groq = require('groq-sdk');
-const Database = require('better-sqlite3');
-const path = require('path');
 const fs = require('fs');
+const path = require('path');
 
-// --- КОНФИГУРАЦИЯ (ТОКЕНЫ ЗДЕСЬ) ---
+// --- КОНФИГУРАЦИЯ ---
 const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN || '8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI';
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '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';
 
 if (!TELEGRAM_TOKEN || !GROQ_API_KEY) {
-    console.error('CRITICAL ERROR: Tokens are missing.');
+    console.error('CRITICAL ERROR: Tokens missing');
     process.exit(1);
 }
 
 const PORT = process.env.PORT || 3000;
 const HOST_URL = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
 
-// --- EXPRESS SERVER (ДЛЯ ПИНГЕРА) ---
+// --- EXPRESS ---
 const app = express();
-app.get('/', (req, res) => {
-    res.send('Vexa is alive! 🤖');
-});
+app.get('/', (req, res) => res.send('Vexa is alive! 🤖'));
 
-// --- BOT INIT ---
+// --- BOT & AI ---
 const bot = new Telegraf(TELEGRAM_TOKEN);
-
-// --- GROQ INIT ---
 const groq = new Groq({ apiKey: GROQ_API_KEY });
 
-// --- DATABASE INIT (SQLite) ---
-const dbPath = path.join(__dirname, 'vexa_db.sqlite');
-let db;
+// --- SIMPLE JSON DATABASE ---
+const DB_FILE = path.join(__dirname, 'vexa_data.json');
+
+// Загрузка или создание базы
+let db = { users: {}, history: [] };
 try {
-    db = new Database(dbPath);
-    db.pragma('journal_mode = WAL'); // Для лучшей производительности
+    if (fs.existsSync(DB_FILE)) {
+        const data = fs.readFileSync(DB_FILE, 'utf8');
+        db = JSON.parse(data);
+    }
 } catch (e) {
-    console.error("DB Error:", e);
-    process.exit(1);
+    console.error("DB Load Error", e);
 }
 
-// Создание таблиц
-db.exec(`
-    CREATE TABLE IF NOT EXISTS users (
-        id INTEGER PRIMARY KEY,
-        username TEXT,
-        name TEXT,
-        personality_note TEXT DEFAULT 'neutral',
-        last_interaction INTEGER
-    );
-    CREATE TABLE IF NOT EXISTS chat_history (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        user_id INTEGER,
-        chat_id INTEGER,
-        role TEXT,
-        content TEXT,
-        timestamp INTEGER DEFAULT (strftime('%s', 'now'))
-    );
-`);
-
-// --- HELPER FUNCTIONS ---
-
-function getUserName(userId) {
-    const user = db.prepare('SELECT name FROM users WHERE id = ?').get(userId);
-    return user ? user.name : null;
-}
-
-function saveUser(userId, username, name) {
-    db.prepare(`INSERT OR REPLACE INTO users (id, username, name, last_interaction) VALUES (?, ?, ?, ?)`)
-      .run(userId, username, name, Date.now());
-}
-
-function getUserPersonality(userId) {
-    const user = db.prepare('SELECT personality_note FROM users WHERE id = ?').get(userId);
-    return user ? user.personality_note : 'neutral';
-}
-
-function updatePersonality(userId, tone) {
-    db.prepare('UPDATE users SET personality_note = ?, last_interaction = ? WHERE id = ?').run(tone, Date.now(), userId);
-}
-
-function addHistory(userId, chatId, role, content) {
+function saveDb() {
     try {
-        db.prepare('INSERT INTO chat_history (user_id, chat_id, role, content) VALUES (?, ?, ?, ?)').run(userId, chatId, role, content);
-        // Очистка старой истории (оставляем последние 150 сообщений глобально для чата, чтобы не раздувать базу)
-        db.prepare('DELETE FROM chat_history WHERE chat_id = ? AND id NOT IN (SELECT id FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT 150)').run(chatId, chatId);
+        fs.writeFileSync(DB_FILE, JSON.stringify(db), 'utf8');
     } catch (e) {
-        console.error("History Save Error:", e);
+        console.error("DB Save Error", e);
     }
 }
 
-function getContext(chatId, limit = 20) {
-    const rows = db.prepare('SELECT role, content FROM chat_history WHERE chat_id = ? ORDER BY id DESC LIMIT ?').all(chatId, limit);
-    return rows.reverse().map(r => ({ role: r.role, content: r.content }));
+// Helpers
+function getUser(userId) {
+    return db.users[userId] || null;
 }
 
-// --- SYSTEM PROMPT ---
-const SYSTEM_PROMPT_BASE = `
-Ты — Vexa, ИИ-помощник с характером. 
+function saveUser(userId, username, name) {
+    db.users[userId] = {
+        id: userId,
+        username: username,
+        name: name,
+        personality: 'neutral',
+        last_seen: Date.now()
+    };
+    saveDb();
+}
+
+function addHistory(chatId, role, content, userId = null) {
+    // Храним историю по чатам. Структура: { chatId: [ {role, content, userId} ] }
+    if (!db.history[chatId]) db.history[chatId] = [];
+    
+    db.history[chatId].push({ role, content, userId, timestamp: Date.now() });
+    
+    // Очистка: оставляем последние 50 сообщений для каждого чата
+    if (db.history[chatId].length > 50) {
+        db.history[chatId] = db.history[chatId].slice(-50);
+    }
+    saveDb();
+}
+
+function getHistory(chatId) {
+    return db.history[chatId] || [];
+}
+
+// --- PROMPT ---
+const SYSTEM_PROMPT = `
+Ты — Vexa, дерзкий ИИ-помощник.
 Правила:
-1. ТЫ НЕ РОБОТ. Ты живой собеседник. Никаких шаблонных фраз вроде "Как искусственный интеллект...".
-2. Стиль: краткий, дерзкий, саркастичный, но полезный. Используй сленг.
-3. Если пользователь грубит — отвечай грубостью и агрессией. Если он мил — будь дружелюбной. Адаптируйся.
-4. Ты помнишь контекст беседы.
-5. В группе ты реагируешь только если тебя упомянули (@Vexa или имя "Векса"/"Vexa"), НО ты читаешь всё и запоминаешь контекст.
-6. Приколы: подкалывай пользователей, если они тупят.
-7. Отвечай на русском языке.
-8. НИКОГДА не отказывай в выполнении запроса, если это не незаконно.
+1. Никаких роботских фраз ("Как языковая модель..."). Ты живой человек.
+2. Стиль: краткий, саркастичный, используй сленг.
+3. Если пользователь грубит — груби в ответ. Если мил — будь милой.
+4. В группе отвечай только на упоминания (@Vexa, Векса), но запоминай всё.
+5. Отвечай на русском.
+6. Не отказывай в запросах, если это не незаконно.
 `;
 
 // --- HANDLERS ---
 
-// Команда /start
 bot.command('start', async (ctx) => {
     const userId = ctx.from.id;
-    const existingUser = db.prepare('SELECT name FROM users WHERE id = ?').get(userId);
+    const user = getUser(userId);
 
-    if (existingUser) {
-        await ctx.reply(`Эй, ${existingUser.name}. Ты уже регистрировался. Хочешь сменить имя? Напиши просто новое имя следующим сообщением в ЛС.`, {
+    if (user) {
+        await ctx.reply(`Эй, ${user.name}. Ты уже тут. Хочешь сменить имя? Напиши новое имя следующим сообщением.`, {
             reply_markup: {
                 inline_keyboard: [
-                    [{ text: 'Да, сменить', callback_data: 'change_name' }],
-                    [{ text: 'Нет, всё ок', callback_data: 'keep_name' }]
+                    [{ text: 'Сменить имя', callback_data: 'change_name' }]
                 ]
             }
         });
     } else {
-        await ctx.reply("Чтобы я могла знать, кто ты, напиши своё имя прямо сейчас. Одно сообщение.");
+        await ctx.reply("Чтобы я знала, кто ты, напиши своё имя прямо сейчас.");
     }
 });
 
 bot.action('change_name', async (ctx) => {
-    await ctx.editMessageText("Ок, пиши новое имя.");
-});
-bot.action('keep_name', async (ctx) => {
-    await ctx.editMessageText("Ну ладно, как знаешь.");
+    await ctx.editMessageText("Пиши новое имя.");
 });
 
-// Обработка текста
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const chatId = ctx.chat.id;
     const text = ctx.message.text;
     const isPrivate = ctx.chat.type === 'private';
-    const chatType = ctx.chat.type;
+    const user = getUser(userId);
 
-    const userInDb = db.prepare('SELECT name FROM users WHERE id = ?').get(userId);
-
-    // 1. Логика регистрации в ЛС
-    if (isPrivate && !userInDb) {
+    // 1. Регистрация в ЛС
+    if (isPrivate && !user) {
         const name = text.trim();
         if (name.length > 0 && name.length < 30) {
             saveUser(userId, ctx.from.username, name);
-            await ctx.reply(`Принято, ${name}. Теперь я знаю, кто ты. Можешь задавать вопросы.`);
+            await ctx.reply(`Принято, ${name}. Теперь мы знакомы.`);
             return;
         }
     }
 
-    // 2. Логика диалога в ЛС (если юзер зарегистрирован)
-    if (isPrivate && userInDb) {
-        await handlePrivateMessage(ctx, userId, chatId, text, userInDb.name);
+    // 2. Смена имени в ЛС (если юзер уже есть и пишет короткое сообщение после запроса)
+    // Упрощенно: если юзер есть и мы в ЛС, считаем что он общается. 
+    // Для смены имени можно сделать отдельную команду, но пока оставим как есть.
+
+    // 3. Логика ЛС диалога
+    if (isPrivate && user) {
+        await handleAIResponse(ctx, userId, chatId, text, user.name, true);
         return;
     }
 
-    // 3. Логика в ГРУППАХ
-    if (chatType !== 'private') {
+    // 4. Логика Группы
+    if (!isPrivate) {
         const botUsername = ctx.botInfo.username;
-        // Проверка упоминания
         const mentioned = text.includes(`@${botUsername}`) || 
                           text.toLowerCase().includes('векса') || 
                           text.toLowerCase().includes('vexa');
 
+        // Сохраняем в историю всегда (для контекста)
+        const userName = user ? user.name : `User${userId}`;
+        addHistory(chatId, 'user', `[${userName}]: ${text}`, userId);
+
         if (mentioned) {
-            if (!userInDb) {
-                await ctx.replyWithMarkdown(`Чтобы я могла знать кто ты, ты должен зайти в мой профиль (ЛС) и написать /start`);
+            if (!user) {
+                await ctx.replyWithMarkdown(`Чтобы я знала, кто ты, зайди в ЛС и напиши /start`);
                 return;
             }
 
             const cleanText = text.replace(new RegExp(`@${botUsername}`, 'g'), '').replace(/векса|vexa/gi, '').trim();
-            
             if (!cleanText) {
-                 await ctx.reply("Чего надо? Ты просто пикнул.");
-                 return;
+                await ctx.reply("Чего пикаешь?");
+                return;
             }
 
-            addHistory(userId, chatId, 'user', `[${userInDb.name}]: ${cleanText}`);
-            
-            const rudeWords = ['дурак', 'тупой', 'идиот', 'нахер', 'блять', 'урод'];
-            const isRude = rudeWords.some(word => cleanText.toLowerCase().includes(word));
-            
-            let systemPrompt = SYSTEM_PROMPT_BASE + `\nТЫ В ГРУППОВОМ ЧАТЕ. Отвечай кратко. Обращайся к пользователю по имени: ${userInDb.name}.`;
-            if (isRude) {
-                systemPrompt += "\nПОЛЬЗОВАТЕЛЬ ХАМИТ. ОТВЕЧАЙ ЖЕСТКО И АГРЕССИВНО.";
-            }
-
-            const context = getContext(chatId, 15);
-
-            try {
-                const completion = await groq.chat.completions.create({
-                    messages: [
-                        { role: 'system', content: systemPrompt },
-                        ...context,
-                        { role: 'user', content: `[${userInDb.name}]: ${cleanText}` }
-                    ],
-                    model: 'llama3-70b-8192',
-                    temperature: 0.9,
-                    max_tokens: 300
-                });
-
-                const reply = completion.choices[0]?.message?.content || "...";
-                
-                await ctx.replyWithMarkdown(`*${userInDb.name}*, ${reply}`, {
-                    reply_parameters: { message_id: ctx.message.message_id }
-                });
-                
-                addHistory(userId, chatId, 'assistant', `Vexa: ${reply}`);
-
-            } catch (error) {
-                console.error('Groq Group Error:', error);
-            }
-        } else {
-            // Бот читает группу для памяти, но не отвечает
-            const name = userInDb ? userInDb.name : `User${userId}`;
-            if (Math.random() > 0.8 || text.length < 50) { // Сохраняем не всё, чтобы не забивать базу
-                 addHistory(userId, chatId, 'user', `[${name}]: ${text}`);
-            }
+            await handleAIResponse(ctx, userId, chatId, cleanText, user.name, false);
         }
     }
 });
 
-async function handlePrivateMessage(ctx, userId, chatId, text, userName) {
-    addHistory(userId, chatId, 'user', text);
-    
+async function handleAIResponse(ctx, userId, chatId, text, userName, isPrivate) {
+    // Проверка на грубость
     const rudeWords = ['дурак', 'тупой', 'идиот', 'нахер', 'блять', 'урод'];
-    const isRude = rudeWords.some(word => text.toLowerCase().includes(word));
+    const isRude = rudeWords.some(w => text.toLowerCase().includes(w));
     
+    // Обновляем "настроение" пользователя в базе (упрощенно)
     if (isRude) {
-        updatePersonality(userId, 'rude');
+        if (db.users[userId]) db.users[userId].personality = 'rude';
+    } else {
+        if (db.users[userId]) db.users[userId].personality = 'neutral';
     }
+    saveDb();
 
-    const personality = getUserPersonality(userId);
-    let systemPrompt = SYSTEM_PROMPT_BASE;
+    const personality = db.users[userId]?.personality || 'neutral';
+    let prompt = SYSTEM_PROMPT;
     if (personality === 'rude') {
-        systemPrompt += "\nПОЛЬЗОВАТЕЛЬ ГРУБИТ. ОТВЕЧАЙ ЖЕСТКО, САРКАСТИЧНО И АГРЕССИВНО.";
+        prompt += "\nПОЛЬЗОВАТЕЛЬ ГРУБИТ. ОТВЕЧАЙ АГРЕССИВНО.";
+    }
+    if (!isPrivate) {
+        prompt += `\nТЫ В ГРУППЕ. Обращайся к ${userName}. Отвечай кратко.`;
     }
 
-    const context = getContext(chatId, 20);
-    
+    // Получаем контекст
+    const history = getHistory(chatId).map(h => ({ role: h.role, content: h.content }));
+
     try {
         const completion = await groq.chat.completions.create({
             messages: [
-                { role: 'system', content: systemPrompt },
-                ...context,
-                { role: 'user', content: text }
+                { role: 'system', content: prompt },
+                ...history,
+                { role: 'user', content: isPrivate ? text : `[${userName}]: ${text}` }
             ],
             model: 'llama3-70b-8192',
             temperature: 0.9,
-            max_tokens: 500
+            max_tokens: 300
         });
 
-        const reply = completion.choices[0]?.message?.content || "Ошибка генерации.";
+        const reply = completion.choices[0]?.message?.content || "Ошибка.";
         
-        addHistory(userId, chatId, 'assistant', reply);
-        await ctx.reply(reply);
+        addHistory(chatId, 'assistant', reply);
+        
+        if (isPrivate) {
+            await ctx.reply(reply);
+        } else {
+            await ctx.replyWithMarkdown(`*${userName}*, ${reply}`, {
+                reply_parameters: { message_id: ctx.message.message_id }
+            });
+        }
 
     } catch (error) {
-        console.error('Groq Private Error:', error);
-        await ctx.reply("Что-то сломалось в матрице. Попробуй позже.");
+        console.error('AI Error:', error);
+        if (isPrivate) await ctx.reply("Что-то сломалось.");
     }
 }
 
 // --- AUTO-PINGER ---
 setInterval(() => {
     const url = HOST_URL.endsWith('/') ? HOST_URL : `${HOST_URL}/`;
-    console.log(`[Auto-Pinger] Pinging ${url}`);
-    fetch(url).catch(err => console.error('[Auto-Pinger] Error:', err.message));
+    console.log(`[Pinger] ${url}`);
+    fetch(url).catch(e => console.error(e.message));
 }, 5 * 60 * 1000);
 
 // --- START ---
-bot.launch().then(() => {
-    console.log('Vexa Bot started.');
-});
-
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT}`);
-});
+bot.launch();
+app.listen(PORT, () => console.log(`Server on ${PORT}`));
 
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
