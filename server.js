@@ -3,10 +3,13 @@ const sqlite3 = require('sqlite3').verbose();
 const http = require('http');
 
 // ==========================================
-// НАСТРОЙКИ (ЗАМЕНИ НА СВОИ НОВЫЕ КЛЮЧИ!)
+// НАСТРОЙКИ (ОБЯЗАТЕЛЬНО ЗАМЕНИ ТОКЕН!)
 // ==========================================
-const BOT_TOKEN = '8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI'; // Сюда вставь новый токен из BotFather
-const API_KEY = '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';      // Сюда вставь свой API ключ (для внешних функций, если нужно)
+// Вставь сюда свой НОВЫЙ токен из @BotFather (старый отзови!)
+const BOT_TOKEN = '8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI'; // <--- ЗАМЕНИ ЭТОТ ТОКЕН НА СВОЙ НОВЫЙ!
+
+// Твой API ключ (если нужен для внешних сервисов)
+const API_KEY = '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'; 
 
 // Имя бота
 const BOT_NAME = 'Vexa AI';
@@ -16,10 +19,10 @@ const BOT_NAME = 'Vexa AI';
 // ==========================================
 const db = new sqlite3.Database('./vexa_db.sqlite', (err) => {
     if (err) console.error(err.message);
-    console.log('Подключено к базе данных SQLite.');
+    else console.log('Подключено к базе данных SQLite.');
 });
 
-// Создаем таблицу пользователей
+// Создаем таблицу пользователей, если её нет
 db.run(`CREATE TABLE IF NOT EXISTS users (
     id INTEGER PRIMARY KEY,
     name TEXT,
@@ -27,18 +30,25 @@ db.run(`CREATE TABLE IF NOT EXISTS users (
     is_rude INTEGER DEFAULT 0
 )`);
 
-// Функция добавления пользователя или обновления имени
+// Функция добавления или обновления пользователя
 function addUser(id, name) {
     return new Promise((resolve, reject) => {
         db.get("SELECT * FROM users WHERE id = ?", [id], (err, row) => {
             if (err) return reject(err);
+            
             if (row) {
-                // Если имя новое, обновляем, иначе игнорируем (или можно предложить сменить)
+                // Если имя уже есть, проверяем, изменилось ли оно
                 if (row.name !== name) {
-                    db.run("UPDATE users SET name = ?, last_seen = ? WHERE id = ?", [name, Date.now(), id]);
+                    db.run("UPDATE users SET name = ?, last_seen = ? WHERE id = ?", 
+                           [name, Date.now(), id], function(err) {
+                               if (err) return reject(err);
+                               resolve({ exists: true, changed: true });
+                           });
+                } else {
+                    resolve({ exists: true, changed: false });
                 }
-                resolve({ exists: true, changed: row.name !== name });
             } else {
+                // Новый пользователь
                 db.run("INSERT INTO users (id, name, last_seen, is_rude) VALUES (?, ?, ?, ?)", 
                        [id, name, Date.now(), 0], function(err) {
                            if (err) return reject(err);
@@ -85,21 +95,20 @@ bot.command('start', async (ctx) => {
         );
     } else {
         await ctx.reply(
-            `👋 Привет! Я Vexa AI.\n\nЧтобы я мог знать, кто ты, напиши своё имя прямо сейчас. \n(Например: Пиши просто "Leym")`,
+            `👋 Привет! Я Vexa AI.\n\nЧтобы я мог знать, кто ты, напиши своё имя прямо сейчас.\n(Например: Пиши просто "Leym")`,
             Markup.keyboard([['Ваше имя']]).oneTime()
         );
     }
 });
 
-// Обработка смены имени
+// Обработка смены имени через кнопку
 bot.action('change_name', async (ctx) => {
     await ctx.answerCbQuery();
     await ctx.reply("Какое имя вы хотите установить?");
-    // Ожидаем следующее сообщение пользователя
     ctx.session = { waitingForName: true };
 });
 
-// Глобальная обработка сообщений (для смены имени)
+// Глобальная обработка сообщений (для смены имени при /start)
 bot.on('text', async (ctx) => {
     const userId = ctx.from.id;
     const text = ctx.text;
@@ -116,11 +125,6 @@ bot.on('text', async (ctx) => {
         }
         return;
     }
-
-    // Если пользователь не в группе (личный чат) и не меняет имя
-    if (!ctx.chat.type || ctx.chat.type === 'private') {
-        // Можно добавить логику личного общения, если нужно
-    }
 });
 
 // ==========================================
@@ -129,7 +133,7 @@ bot.on('text', async (ctx) => {
 bot.on(['message'], async (ctx) => {
     const chatId = ctx.chat.id;
     const userId = ctx.from.id;
-    const userName = ctx.from.first_name || ctx.from.username;
+    const userName = ctx.from.first_name || ctx.from.username || "User";
     const text = ctx.text || ctx.caption || "";
 
     // 1. Сохраняем память группы (последние 50 сообщений для контекста)
@@ -141,7 +145,7 @@ bot.on(['message'], async (ctx) => {
         timestamp: Date.now()
     });
     if (groupMemory[chatId].length > 50) {
-        groupMemory[chatId].shift(); // Удаляем старые
+        groupMemory[chatId].shift(); // Удаляем старые сообщения
     }
 
     // 2. Проверка упоминания (@Vexa или "Векса")
@@ -154,22 +158,23 @@ bot.on(['message'], async (ctx) => {
         const targetName = mentionedUser ? mentionedUser : userName;
         
         // Анализируем тон (простая эвристика)
-        const rudeWords = ['дурак', 'идиот', 'тупой', 'муда', 'урод'];
+        const rudeWords = ['дурак', 'идиот', 'тупой', 'муда', 'урод', 'глупый'];
         const isRude = rudeWords.some(word => text.toLowerCase().includes(word));
         
         let response = "";
         
         // Логика ответа
         if (isRude) {
-            // Если пользователь грубит, Vexa отвечает грубо, но с юмором
+            // Если пользователь грубит, Vexa отвечает грубо
             const rudeResponses = [
                 `Эй, ${targetName}, не хами мне! Я же ИИ, а не твоя служанка. 😒`,
                 `Ого, какой грубый человек. Может, тебе стоит успокоиться? 🤨`,
-                `${targetName}, если будешь так говорить, я перестану отвечать на твои вопросы! 🛑`
+                `${targetName}, если будешь так говорить, я перестану отвечать на твои вопросы! 🛑`,
+                `Зачем ты такой злой? Спокойнее, пожалуйста.`
             ];
             response = rudeResponses[Math.floor(Math.random() * rudeResponses.length)];
             
-            // Запоминаем, что этот юзер груб (опционально)
+            // Запоминаем, что этот юзер груб
             db.run("UPDATE users SET is_rude = 1 WHERE id = ?", [userId]);
         } else {
             // Нормальный ответ
@@ -177,27 +182,27 @@ bot.on(['message'], async (ctx) => {
                 `Привет, ${targetName}! Чем могу помочь? 🔍`,
                 `Я слушаю тебя, ${targetName}. Что случилось?`,
                 `Здарова! Тема интересная, рассказывай подробнее.`,
-                `Vexa на связи! Жду твой вопрос. 💬`
+                `Vexa на связи! Жду твой вопрос. 💬`,
+                `Приветствую, ${targetName}! Как твои дела?`
             ];
             
             // Если это просто приветствие
             if (text.toLowerCase().includes('привет') || text.toLowerCase().includes('здравствуй')) {
                 response = normalResponses[0];
             } else {
-                // Генерируем ответ на основе контекста (упрощенно)
-                // В реальном проекте здесь нужен вызов LLM (например, через API), 
-                // но так как у нас "свой" код, сделаем умный выбор из шаблонов или шутку
-                
+                // Генерируем ответ на основе контекста
                 const randomResponse = normalResponses[Math.floor(Math.random() * normalResponses.length)];
                 
-                // Добавляем "Приколы"
+                // Добавляем "Приколы" (шутки)
                 const jokes = [
                     "Кстати, а ты знал, что если дать коту Wi-Fi, он станет интернет-зависимым? 🐱📶",
                     "Мой алгоритм говорит, что сегодня отличный день, чтобы ничего не делать. 😉",
-                    "Я только что посчитал звезды, их больше, чем вопросов в этой группе! ⭐"
+                    "Я только что посчитал звезды, их больше, чем вопросов в этой группе! ⭐",
+                    "Не забудь выпить воды, ты выглядишь уставшим! 💧",
+                    "Если бы я был человеком, я бы уже спал. Но я бот, так что я бодр!"
                 ];
                 
-                // Иногда отвечаем шуткой
+                // Иногда отвечаем шуткой (30% шанс)
                 if (Math.random() > 0.7) {
                     response = `${randomResponse}\n\n😂 ${jokes[Math.floor(Math.random() * jokes.length)]}`;
                 } else {
@@ -215,17 +220,6 @@ bot.on(['message'], async (ctx) => {
 // ==========================================
 function startAutoPinger() {
     setInterval(() => {
-        // Отправляем запрос на свой endpoint (или просто ping самого себя)
-        // Поскольку у нас нет веб-сервера, мы используем fetch к самому себе, 
-        // если бы был веб-хостинг. Но для простоты на Render лучше сделать простой HTTP сервер.
-        
-        // Вариант 2: Используем внешний сервис (UptimeRobot) - но это требует настройки.
-        // Вариант 3: Делаем простой HTTP сервер внутри node.js, который принимает запросы.
-        
-        // Мы реализуем простой HTTP сервер для приема пинга.
-        // PING_URL должен быть установлен в переменную окружения на Render, например: https://your-bot-name.herokuapp.com/ping
-        // Но так как мы пишем server.js, мы сделаем сервер, который слушает порт.
-        
         console.log(`Ping sent at ${new Date().toISOString()} to keep server alive.`);
     }, 5 * 60 * 1000); // Каждые 5 минут
 }
