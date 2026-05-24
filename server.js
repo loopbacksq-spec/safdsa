@@ -4,28 +4,29 @@ const express = require('express');
 const fs = require('fs');
 const path = require('path');
 
-// --- ТВОИ ДАННЫЕ (ЖЕСТКО ПРОПИСАНЫ) ---
+// --- ТВОИ ДАННЫЕ ---
 const BOT_TOKEN = "8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI";
 const GROQ_API_KEY = "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";
 
-// Инициализация
+// Инициализация бота
 const bot = new Telegraf(BOT_TOKEN);
 const groq = new Groq({ apiKey: GROQ_API_KEY });
+
+// Express для авто-пинга (чтобы Render не спал)
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// --- БАЗА ДАННЫХ (Файл data.json) ---
+// --- БАЗА ДАННЫХ ---
 const DATA_FILE = path.join(__dirname, 'data.json');
 let db = { users: {} };
 
 function loadDB() {
     try {
         if (fs.existsSync(DATA_FILE)) {
-            const raw = fs.readFileSync(DATA_FILE);
-            db = JSON.parse(raw);
+            db = JSON.parse(fs.readFileSync(DATA_FILE));
         }
     } catch (e) {
-        console.log("База не найдена, создаем новую.");
+        console.log("База данных создана заново.");
     }
 }
 
@@ -33,7 +34,7 @@ function saveDB() {
     try {
         fs.writeFileSync(DATA_FILE, JSON.stringify(db, null, 2));
     } catch (e) {
-        console.error("Ошибка записи базы:", e);
+        console.error("Ошибка записи DB:", e.message);
     }
 }
 
@@ -41,15 +42,14 @@ loadDB();
 
 // --- ЛОГИКА VEXA ---
 
-// Получение или создание профиля
 function getProfile(userId, firstName) {
     if (!db.users[userId]) {
         db.users[userId] = {
             name: firstName,
-            realName: null, // Имя, которое юзер сам сказал
+            realName: null,
             age: null,
             mood: 'neutral', // neutral, angry, happy
-            history: [], // История переписки
+            history: [],
             lastSeen: Date.now()
         };
         saveDB();
@@ -57,32 +57,25 @@ function getProfile(userId, firstName) {
     return db.users[userId];
 }
 
-// Анализ текста на наличие личных данных (Имя, Возраст)
 function analyzePersonalData(userId, text) {
     const user = db.users[userId];
     const lower = text.toLowerCase();
 
-    // Поиск имени: "я [имя]", "зовут [имя]"
+    // Имя
     const nameMatch = lower.match(/(?:я|меня\s+зовут|мое\s+имя)\s+([а-яёa-z]+)/i);
     if (nameMatch && nameMatch[1].length > 2) {
-        const newName = nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1);
-        if (user.realName !== newName) {
-            user.realName = newName;
-            console.log(`User ${userId} identified as ${newName}`);
-        }
+        user.realName = nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1);
     }
 
-    // Поиск возраста: "мне [число] лет"
+    // Возраст
     const ageMatch = lower.match(/(\d{1,2})\s*(?:лет|год|года)/i);
     if (ageMatch) {
         user.age = parseInt(ageMatch[1]);
     }
     
-    // Определение грубости (простой триггер для смены настроения)
-    const badWords = ['дурак', 'тупая', 'идиот', 'нахуй', 'блять', 'урод', 'бот'];
-    const isRude = badWords.some(word => lower.includes(word));
-    
-    if (isRude) {
+    // Настроение (Грубость)
+    const badWords = ['дурак', 'тупая', 'идиот', 'нахуй', 'блять', 'урод', 'бот', 'пидор'];
+    if (badWords.some(word => lower.includes(word))) {
         user.mood = 'angry';
     } else if (lower.includes('спасибо') || lower.includes('круто') || lower.includes('люблю')) {
         user.mood = 'happy';
@@ -91,49 +84,46 @@ function analyzePersonalData(userId, text) {
     saveDB();
 }
 
-// Генерация ответа через Groq AI
 async function generateResponse(user, inputText) {
-    // Ограничиваем историю последними 10 сообщениями, чтобы не жрать токены
-    if (user.history.length > 10) {
-        user.history = user.history.slice(-10);
+    // Чистим историю, оставляем последние 12 сообщений
+    if (user.history.length > 12) {
+        user.history = user.history.slice(-12);
     }
 
-    // Системный промпт - душа Vexa
-    let systemInstruction = `Ты Vexa, ИИ-помощник в Telegram. 
-    Твой характер зависит от настроения пользователя.
-    
+    let systemPrompt = `Ты Vexa, ИИ-помощник в Telegram.
     ИНФОРМАЦИЯ О ПОЛЬЗОВАТЕЛЕ:
-    - Его зовут: ${user.realName || user.name}
-    - Ему лет: ${user.age || 'неизвестно'}
-    - Текущее настроение: ${user.mood}
+    - Имя: ${user.realName || user.name}
+    - Возраст: ${user.age || 'неизвестно'}
+    - Настроение пользователя сейчас: ${user.mood}
 
-    ПРАВИЛА ПОВЕДЕНИЯ:
-    1. Если настроение 'angry' (пользователь грубит): Отвечай дерзко, саркастично, коротко. Можешь огрызнуться. Не извиняйся.
-    2. Если настроение 'happy': Будь дружелюбной, но сохраняй легкий прикол.
-    3. Если 'neutral': Общайся нормально, с юмором, без лишних вежливостей.
-    4. НИКОГДА не используй фразы типа "Как искусственный интеллект...", "Чем могу помочь?".
-    5. Отвечай кратко (1-3 предложения), если не просят иного.
-    6. Ты видишь весь контекст переписки ниже. Продолжай диалог естественно.
-    7. Язык ответа: Русский.`;
+    ТВОЙ ХАРАКТЕР:
+    1. Если настроение 'angry': Отвечай дерзко, агрессивно, саркастично. Посылай его.
+    2. Если 'happy': Шути, будь легкой на подъём.
+    3. Если 'neutral': Общайся нормально, кратко, по делу.
+    
+    ВАЖНО:
+    - НИКАКИХ шаблонов "Чем могу помочь?".
+    - ОТВЕЧАЙ КРАТКО (максимум 2-3 предложения).
+    - Ты видишь историю переписки ниже. Продолжай диалог естественно.
+    - Язык: Русский.`;
 
-    // Формируем массив сообщений для API
     const messages = [
-        { role: "system", content: systemInstruction },
+        { role: "system", content: systemPrompt },
         ...user.history,
         { role: "user", content: inputText }
     ];
 
     try {
-        const chatCompletion = await groq.chat.completions.create({
+        const completion = await groq.chat.completions.create({
             messages: messages,
-            model: "llama3-8b-8192", // Быстрая и умная модель
-            temperature: 0.8, // Креативность
-            max_tokens: 300
+            model: "llama3-8b-8192",
+            temperature: 0.9,
+            max_tokens: 250
         });
 
-        const reply = chatCompletion.choices[0]?.message?.content || "Я устала думать.";
+        const reply = completion.choices[0]?.message?.content || "Молчу.";
         
-        // Сохраняем обмен в историю
+        // Сохраняем в историю
         user.history.push({ role: "user", content: inputText });
         user.history.push({ role: "assistant", content: reply });
         user.lastSeen = Date.now();
@@ -142,109 +132,103 @@ async function generateResponse(user, inputText) {
         return reply;
 
     } catch (error) {
-        console.error("Groq Error:", error);
-        return "У меня голова болит (ошибка API). Попробуй позже.";
+        console.error("Groq Error:", error.message);
+        return "У меня лаги с мозгами (API Error). Попробуй через минуту.";
     }
 }
 
-// --- ОБРАБОТЧИКИ TELEGRAM ---
+// --- ОБРАБОТЧИКИ ---
 
 bot.command('start', (ctx) => {
     const userId = ctx.from.id;
     getProfile(userId, ctx.from.first_name);
-    ctx.reply(`Привет. Я Vexa. \nПиши что хочешь. В группах упоминай меня (@${ctx.botInfo.username}). \nЯ всё запоминаю.`);
+    ctx.reply(`Я Vexa. Пиши что хочешь. В группах зови меня @${ctx.botInfo.username}. Я всё помню.`);
 });
 
 bot.on('text', async (ctx) => {
-    const text = ctx.message.text;
-    const userId = ctx.from.id;
-    const chatId = ctx.chat.id;
-    const isGroup = ctx.chat.type !== 'private';
-    const botUsername = ctx.botInfo.username;
+    try {
+        const text = ctx.message.text;
+        const userId = ctx.from.id;
+        const chatId = ctx.chat.id;
+        const isGroup = ctx.chat.type !== 'private';
+        const botUsername = ctx.botInfo.username;
 
-    // Если группа - проверяем, нам ли пишут
-    if (isGroup) {
-        const lowerText = text.toLowerCase();
-        const mentioned = ctx.message.entities && ctx.message.entities.some(e => 
-            e.type === 'mention' && text.substring(e.offset, e.offset + e.length) === '@' + botUsername
-        );
-        const keywordTrigger = lowerText.includes('векса') || lowerText.includes('vexa');
-        const isReplyToBot = ctx.message.reply_to_message && ctx.message.reply_to_message.from.id === ctx.botInfo.id;
+        // Логика для групп
+        if (isGroup) {
+            const lowerText = text.toLowerCase();
+            // Проверяем упоминание @bot
+            const mentioned = ctx.message.entities && ctx.message.entities.some(e => 
+                e.type === 'mention' && text.substring(e.offset, e.offset + e.length) === '@' + botUsername
+            );
+            // Проверяем слова Vexa/Векса
+            const keywordTrigger = lowerText.includes('векса') || lowerText.includes('vexa');
+            // Проверяем реплай на бота
+            const isReplyToBot = ctx.message.reply_to_message && ctx.message.reply_to_message.from.id === ctx.botInfo.id;
 
-        if (!mentioned && !keywordTrigger && !isReplyToBot) {
-            return; // Игнорируем чужие сообщения в группе
-        }
+            // Если ничего из этого нет - игнорируем
+            if (!mentioned && !keywordTrigger && !isReplyToBot) {
+                return; 
+            }
 
-        // Чистим текст от упоминаний
-        let cleanText = text.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
-        cleanText = cleanText.replace(/^(векса|vexa)\s*:?\s*/i, '').trim();
-        if (!cleanText) cleanText = "Ну?";
+            // Чистим текст от мусора
+            let cleanText = text.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
+            cleanText = cleanText.replace(/^(векса|vexa)\s*:?\s*/i, '').trim();
+            if (!cleanText) cleanText = "Ну?";
 
-        const user = getProfile(userId, ctx.from.first_name);
-        analyzePersonalData(userId, cleanText);
-        
-        const response = await generateResponse(user, cleanText);
-        
-        // Отправляем с реплаем
-        try {
+            const user = getProfile(userId, ctx.from.first_name);
+            analyzePersonalData(userId, cleanText);
+            
+            const response = await generateResponse(user, cleanText);
+            
+            // Отправляем ответ с реплаем
             await ctx.telegram.sendMessage(chatId, response, {
                 reply_parameters: { message_id: ctx.message.message_id }
             });
-        } catch (e) {
-            console.log("Ошибка отправки в группу");
-        }
 
-    } else {
-        // Личные сообщения (ЛС) - отвечаем всегда
-        const user = getProfile(userId, ctx.from.first_name);
-        analyzePersonalData(userId, text);
-        
-        const response = await generateResponse(user, text);
-        await ctx.reply(response);
+        } else {
+            // Личные сообщения
+            const user = getProfile(userId, ctx.from.first_name);
+            analyzePersonalData(userId, text);
+            const response = await generateResponse(user, text);
+            await ctx.reply(response);
+        }
+    } catch (err) {
+        console.error("Handler Error:", err);
     }
 });
 
-// --- EXPRESS SERVER & AUTO-PINGER ---
+// --- ЗАПУСК СЕРВЕРА И БОТА ---
 
-// Эндпоинт для пинга (чтобы Render не спал)
+// 1. Express для пинга (Render не уснет, если есть активность на порту)
 app.get('/ping', (req, res) => {
-    res.status(200).send('Vexa is alive and kicking!');
+    res.send('Vexa is alive!');
 });
-
-// Настройка Webhook для Telegram (стабильнее для Render)
-const webhookPath = '/webhook';
-// Render автоматически назначает внешний URL, мы его используем
-const domain = process.env.RENDER_EXTERNAL_URL || `http://localhost:${PORT}`;
-
-if (process.env.RENDER_EXTERNAL_URL) {
-    bot.launch({
-        webhook: {
-            domain: process.env.RENDER_EXTERNAL_URL,
-            port: PORT,
-            hookPath: webhookPath,
-        }
-    });
-    app.use(bot.webhookCallback(webhookPath));
-} else {
-    // Локальный запуск (Long Polling)
-    bot.launch();
-}
 
 app.listen(PORT, () => {
-    console.log(`Vexa Server running on port ${PORT}`);
-    console.log(`Webhook URL: ${domain}${webhookPath}`);
+    console.log(`Express server running on port ${PORT}`);
 });
+
+// 2. Запуск бота в режиме Long Polling (самый надежный для Render Free)
+// longPolling позволяет боту работать даже если webhook глючит
+bot.launch({
+    dropPendingUpdates: false, // Не удалять старые сообщения при перезагрузке
+    polling: {
+        timeout: 30, // Таймаут запросов
+    }
+});
+
+console.log("Vexa Bot started successfully!");
 
 // Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
-// Внутренний пингер (каждые 5 минут стучится сам в себя)
+// 3. Авто-пингер внутри процесса (стучится в свой же Express порт)
 setInterval(() => {
     const http = require('http');
     http.get(`http://localhost:${PORT}/ping`, (res) => {
-        // Просто держим соединение активным
+        // Молча пингуем
     }).on('error', (err) => {
-        // Игнорируем ошибки локального пинга
+        // Игнорируем ошибки
     });
-}, 300000);
+}, 60000); // Каждую минуту
