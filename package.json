@@ -1,22 +1,14 @@
 {
   "name": "vexa-ai-bot",
   "version": "1.0.0",
-  "description": "Vexa AI - Умный помощник для групп с памятью и характером",
+  "description": "Vexa AI - Умный групповой помощник",
   "main": "server.js",
   "scripts": {
     "start": "node server.js",
-    "dev": "node server.js"
+    "ping": "node ping.js"
   },
-  "keywords": [
-    "telegram",
-    "bot",
-    "ai",
-    "vexa",
-    "group-assistant"
-  ],
-  "author": "Leym",
-  "license": "ISC",
   "dependencies": {
-    "telegraf": "^4.15.3"
+    "express": "^4.18.2",
+    "node-telegram-bot-api": "^0.61.0"
   }
 }
