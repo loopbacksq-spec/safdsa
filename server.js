@@ -8,11 +8,15 @@ const path = require('path');
 const BOT_TOKEN = "8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI";
 const GROQ_API_KEY = "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";
 
-// Инициализация бота
+// Инициализация
 const bot = new Telegraf(BOT_TOKEN);
-const groq = new Groq({ apiKey: GROQ_API_KEY });
+// Добавляем таймаут для Groq клиента
+const groq = new Groq({ 
+    apiKey: GROQ_API_KEY,
+    timeout: 30000, // 30 секунд на ответ
+    maxRetries: 2   // 2 попытки перед ошибкой
+});
 
-// Express для авто-пинга (чтобы Render не спал)
 const app = express();
 const PORT = process.env.PORT || 3000;
 
@@ -48,7 +52,7 @@ function getProfile(userId, firstName) {
             name: firstName,
             realName: null,
             age: null,
-            mood: 'neutral', // neutral, angry, happy
+            mood: 'neutral',
             history: [],
             lastSeen: Date.now()
         };
@@ -61,19 +65,16 @@ function analyzePersonalData(userId, text) {
     const user = db.users[userId];
     const lower = text.toLowerCase();
 
-    // Имя
     const nameMatch = lower.match(/(?:я|меня\s+зовут|мое\s+имя)\s+([а-яёa-z]+)/i);
     if (nameMatch && nameMatch[1].length > 2) {
         user.realName = nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1);
     }
 
-    // Возраст
     const ageMatch = lower.match(/(\d{1,2})\s*(?:лет|год|года)/i);
     if (ageMatch) {
         user.age = parseInt(ageMatch[1]);
     }
     
-    // Настроение (Грубость)
     const badWords = ['дурак', 'тупая', 'идиот', 'нахуй', 'блять', 'урод', 'бот', 'пидор'];
     if (badWords.some(word => lower.includes(word))) {
         user.mood = 'angry';
@@ -85,7 +86,6 @@ function analyzePersonalData(userId, text) {
 }
 
 async function generateResponse(user, inputText) {
-    // Чистим историю, оставляем последние 12 сообщений
     if (user.history.length > 12) {
         user.history = user.history.slice(-12);
     }
@@ -114,6 +114,8 @@ async function generateResponse(user, inputText) {
     ];
 
     try {
+        console.log(`[Groq] Отправляю запрос для пользователя ${user.realName || user.name}...`);
+        
         const completion = await groq.chat.completions.create({
             messages: messages,
             model: "llama3-8b-8192",
@@ -122,8 +124,8 @@ async function generateResponse(user, inputText) {
         });
 
         const reply = completion.choices[0]?.message?.content || "Молчу.";
+        console.log(`[Groq] Успешный ответ.`);
         
-        // Сохраняем в историю
         user.history.push({ role: "user", content: inputText });
         user.history.push({ role: "assistant", content: reply });
         user.lastSeen = Date.now();
@@ -132,8 +134,24 @@ async function generateResponse(user, inputText) {
         return reply;
 
     } catch (error) {
-        console.error("Groq Error:", error.message);
-        return "У меня лаги с мозгами (API Error). Попробуй через минуту.";
+        // ПОЛНЫЙ ЛОГ ОШИБКИ ДЛЯ ТЕБЯ
+        console.error("!!! GROQ ERROR DETAILS !!!");
+        console.error("Status:", error.status);
+        console.error("Message:", error.message);
+        console.error("Type:", error.type);
+        
+        let userFriendlyError = "У меня лаги с мозгами (API Error).";
+        
+        if (error.status === 401) {
+            userFriendlyError = "Ошибка авторизации API. Ключ неверный.";
+            console.error("ПРОВЕРЬ API KEY! Он неверен.");
+        } else if (error.status === 429) {
+            userFriendlyError = "Слишком много запросов. Подожди минуту.";
+        } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
+            userFriendlyError = "Сервер Groq не отвечает. Попробуй позже.";
+        }
+
+        return userFriendlyError;
     }
 }
 
@@ -153,24 +171,18 @@ bot.on('text', async (ctx) => {
         const isGroup = ctx.chat.type !== 'private';
         const botUsername = ctx.botInfo.username;
 
-        // Логика для групп
         if (isGroup) {
             const lowerText = text.toLowerCase();
-            // Проверяем упоминание @bot
             const mentioned = ctx.message.entities && ctx.message.entities.some(e => 
                 e.type === 'mention' && text.substring(e.offset, e.offset + e.length) === '@' + botUsername
             );
-            // Проверяем слова Vexa/Векса
             const keywordTrigger = lowerText.includes('векса') || lowerText.includes('vexa');
-            // Проверяем реплай на бота
             const isReplyToBot = ctx.message.reply_to_message && ctx.message.reply_to_message.from.id === ctx.botInfo.id;
 
-            // Если ничего из этого нет - игнорируем
             if (!mentioned && !keywordTrigger && !isReplyToBot) {
                 return; 
             }
 
-            // Чистим текст от мусора
             let cleanText = text.replace(new RegExp(`@${botUsername}`, 'gi'), '').trim();
             cleanText = cleanText.replace(/^(векса|vexa)\s*:?\s*/i, '').trim();
             if (!cleanText) cleanText = "Ну?";
@@ -180,13 +192,11 @@ bot.on('text', async (ctx) => {
             
             const response = await generateResponse(user, cleanText);
             
-            // Отправляем ответ с реплаем
             await ctx.telegram.sendMessage(chatId, response, {
                 reply_parameters: { message_id: ctx.message.message_id }
             });
 
         } else {
-            // Личные сообщения
             const user = getProfile(userId, ctx.from.first_name);
             analyzePersonalData(userId, text);
             const response = await generateResponse(user, text);
@@ -197,9 +207,8 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// --- ЗАПУСК СЕРВЕРА И БОТА ---
+// --- ЗАПУСК ---
 
-// 1. Express для пинга (Render не уснет, если есть активность на порту)
 app.get('/ping', (req, res) => {
     res.send('Vexa is alive!');
 });
@@ -208,27 +217,19 @@ app.listen(PORT, () => {
     console.log(`Express server running on port ${PORT}`);
 });
 
-// 2. Запуск бота в режиме Long Polling (самый надежный для Render Free)
-// longPolling позволяет боту работать даже если webhook глючит
 bot.launch({
-    dropPendingUpdates: false, // Не удалять старые сообщения при перезагрузке
+    dropPendingUpdates: false,
     polling: {
-        timeout: 30, // Таймаут запросов
+        timeout: 30,
     }
 });
 
 console.log("Vexa Bot started successfully!");
 
-// Graceful stop
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
-// 3. Авто-пингер внутри процесса (стучится в свой же Express порт)
 setInterval(() => {
     const http = require('http');
-    http.get(`http://localhost:${PORT}/ping`, (res) => {
-        // Молча пингуем
-    }).on('error', (err) => {
-        // Игнорируем ошибки
-    });
-}, 60000); // Каждую минуту
+    http.get(`http://localhost:${PORT}/ping`, (res) => {}).on('error', () => {});
+}, 60000);
