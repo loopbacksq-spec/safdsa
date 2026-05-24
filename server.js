@@ -10,11 +10,10 @@ const GROQ_API_KEY = "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";
 
 // Инициализация
 const bot = new Telegraf(BOT_TOKEN);
-// Добавляем таймаут для Groq клиента
 const groq = new Groq({ 
     apiKey: GROQ_API_KEY,
-    timeout: 30000, // 30 секунд на ответ
-    maxRetries: 2   // 2 попытки перед ошибкой
+    timeout: 30000,
+    maxRetries: 2
 });
 
 const app = express();
@@ -65,16 +64,19 @@ function analyzePersonalData(userId, text) {
     const user = db.users[userId];
     const lower = text.toLowerCase();
 
+    // Поиск имени
     const nameMatch = lower.match(/(?:я|меня\s+зовут|мое\s+имя)\s+([а-яёa-z]+)/i);
     if (nameMatch && nameMatch[1].length > 2) {
         user.realName = nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1);
     }
 
+    // Поиск возраста
     const ageMatch = lower.match(/(\d{1,2})\s*(?:лет|год|года)/i);
     if (ageMatch) {
         user.age = parseInt(ageMatch[1]);
     }
     
+    // Настроение (Грубость)
     const badWords = ['дурак', 'тупая', 'идиот', 'нахуй', 'блять', 'урод', 'бот', 'пидор'];
     if (badWords.some(word => lower.includes(word))) {
         user.mood = 'angry';
@@ -86,8 +88,9 @@ function analyzePersonalData(userId, text) {
 }
 
 async function generateResponse(user, inputText) {
-    if (user.history.length > 12) {
-        user.history = user.history.slice(-12);
+    // Чистим историю (оставляем последние 15 сообщений)
+    if (user.history.length > 15) {
+        user.history = user.history.slice(-15);
     }
 
     let systemPrompt = `Ты Vexa, ИИ-помощник в Telegram.
@@ -114,18 +117,17 @@ async function generateResponse(user, inputText) {
     ];
 
     try {
-        console.log(`[Groq] Отправляю запрос для пользователя ${user.realName || user.name}...`);
-        
         const completion = await groq.chat.completions.create({
             messages: messages,
-            model: "llama3-8b-8192",
+            // САМАЯ СТАНДАРТНАЯ И БЫСТРАЯ МОДЕЛЬ
+            model: "llama-3.1-8b-instant", 
             temperature: 0.9,
-            max_tokens: 250
+            max_tokens: 300
         });
 
         const reply = completion.choices[0]?.message?.content || "Молчу.";
-        console.log(`[Groq] Успешный ответ.`);
         
+        // Сохраняем в историю
         user.history.push({ role: "user", content: inputText });
         user.history.push({ role: "assistant", content: reply });
         user.lastSeen = Date.now();
@@ -134,24 +136,8 @@ async function generateResponse(user, inputText) {
         return reply;
 
     } catch (error) {
-        // ПОЛНЫЙ ЛОГ ОШИБКИ ДЛЯ ТЕБЯ
-        console.error("!!! GROQ ERROR DETAILS !!!");
-        console.error("Status:", error.status);
-        console.error("Message:", error.message);
-        console.error("Type:", error.type);
-        
-        let userFriendlyError = "У меня лаги с мозгами (API Error).";
-        
-        if (error.status === 401) {
-            userFriendlyError = "Ошибка авторизации API. Ключ неверный.";
-            console.error("ПРОВЕРЬ API KEY! Он неверен.");
-        } else if (error.status === 429) {
-            userFriendlyError = "Слишком много запросов. Подожди минуту.";
-        } else if (error.code === 'ETIMEDOUT' || error.code === 'ECONNABORTED') {
-            userFriendlyError = "Сервер Groq не отвечает. Попробуй позже.";
-        }
-
-        return userFriendlyError;
+        console.error("Groq Error:", error.message);
+        return "У меня лаги с мозгами (API Error). Попробуй через минуту.";
     }
 }
 
@@ -217,8 +203,9 @@ app.listen(PORT, () => {
     console.log(`Express server running on port ${PORT}`);
 });
 
+// Запуск бота
 bot.launch({
-    dropPendingUpdates: false,
+    dropPendingUpdates: true, // Сброс старых сообщений при перезагрузке
     polling: {
         timeout: 30,
     }
@@ -229,6 +216,7 @@ console.log("Vexa Bot started successfully!");
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
 
+// Авто-пингер
 setInterval(() => {
     const http = require('http');
     http.get(`http://localhost:${PORT}/ping`, (res) => {}).on('error', () => {});
