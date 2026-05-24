@@ -17,7 +17,8 @@ const groq = new Groq({
 });
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+// Render назначает порт в process.env.PORT. Если нет - берем 10000.
+const PORT = process.env.PORT || 10000;
 
 // --- БАЗА ДАННЫХ ---
 const DATA_FILE = path.join(__dirname, 'data.json');
@@ -64,19 +65,16 @@ function analyzePersonalData(userId, text) {
     const user = db.users[userId];
     const lower = text.toLowerCase();
 
-    // Поиск имени
     const nameMatch = lower.match(/(?:я|меня\s+зовут|мое\s+имя)\s+([а-яёa-z]+)/i);
     if (nameMatch && nameMatch[1].length > 2) {
         user.realName = nameMatch[1].charAt(0).toUpperCase() + nameMatch[1].slice(1);
     }
 
-    // Поиск возраста
     const ageMatch = lower.match(/(\d{1,2})\s*(?:лет|год|года)/i);
     if (ageMatch) {
         user.age = parseInt(ageMatch[1]);
     }
     
-    // Настроение (Грубость)
     const badWords = ['дурак', 'тупая', 'идиот', 'нахуй', 'блять', 'урод', 'бот', 'пидор'];
     if (badWords.some(word => lower.includes(word))) {
         user.mood = 'angry';
@@ -88,7 +86,6 @@ function analyzePersonalData(userId, text) {
 }
 
 async function generateResponse(user, inputText) {
-    // Чистим историю (оставляем последние 15 сообщений)
     if (user.history.length > 15) {
         user.history = user.history.slice(-15);
     }
@@ -119,15 +116,13 @@ async function generateResponse(user, inputText) {
     try {
         const completion = await groq.chat.completions.create({
             messages: messages,
-            // САМАЯ СТАНДАРТНАЯ И БЫСТРАЯ МОДЕЛЬ
-            model: "llama-3.1-8b-instant", 
+            model: "llama-3.1-8b-instant",
             temperature: 0.9,
             max_tokens: 300
         });
 
         const reply = completion.choices[0]?.message?.content || "Молчу.";
         
-        // Сохраняем в историю
         user.history.push({ role: "user", content: inputText });
         user.history.push({ role: "assistant", content: reply });
         user.lastSeen = Date.now();
@@ -193,28 +188,49 @@ bot.on('text', async (ctx) => {
     }
 });
 
-// --- ЗАПУСК ---
+// --- ЗАПУСК СЕРВЕРА (ЖЕЛЕЗОБЕТОННЫЙ) ---
 
 app.get('/ping', (req, res) => {
-    res.send('Vexa is alive!');
+    res.status(200).send('Vexa is alive!');
 });
 
-app.listen(PORT, () => {
-    console.log(`Express server running on port ${PORT}`);
+// Сначала запускаем Express, чтобы Render увидел открытый порт
+const server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`>>> EXPRESS SERVER LISTENING ON PORT ${PORT} <<<`);
+    
+    // Только после успешного старта Express запускаем бота
+    startBot();
 });
 
-// Запуск бота
-bot.launch({
-    dropPendingUpdates: true, // Сброс старых сообщений при перезагрузке
-    polling: {
-        timeout: 30,
-    }
+// Функция запуска бота с обработкой ошибок
+function startBot() {
+    console.log("Starting Telegram Bot...");
+    bot.launch({
+        dropPendingUpdates: true,
+        polling: {
+            timeout: 30,
+        }
+    }).then(() => {
+        console.log("Vexa Bot is running!");
+    }).catch((err) => {
+        console.error("Failed to start bot:", err);
+    });
+
+    // Обработка ошибок бота, чтобы не ронять сервер
+    bot.catch((err) => {
+        console.error("Bot Error:", err);
+    });
+}
+
+// Graceful stop
+process.once('SIGINT', () => {
+    bot.stop('SIGINT');
+    server.close();
 });
-
-console.log("Vexa Bot started successfully!");
-
-process.once('SIGINT', () => bot.stop('SIGINT'));
-process.once('SIGTERM', () => bot.stop('SIGTERM'));
+process.once('SIGTERM', () => {
+    bot.stop('SIGTERM');
+    server.close();
+});
 
 // Авто-пингер
 setInterval(() => {
