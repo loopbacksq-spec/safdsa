@@ -1,87 +1,105 @@
 const { Telegraf } = require('telegraf');
 const http = require('http');
 
-// --- КОНФИГУРАЦИЯ ---
+// ==========================================
+// НАСТРОЙКИ
+// ==========================================
 const TOKEN = '8574222868:AAGb2KVbMSOqJbX5CUKWEIs70-7NidL0OnI';
-const API_KEY = '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';
+const API_KEY = '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'; // Твой ключ (пока не используется для реального AI, но оставил)
+
+// URL для пингера (Render подставит сам при деплое, иначе localhost)
 const SERVER_URL = process.env.SERVER_URL || 'http://localhost:3000';
 const PORT = process.env.PORT || 3000;
 
-// --- ИНИЦИАЛИЗАЦИЯ ---
+// ==========================================
+// ИНИЦИАЛИЗАЦИЯ
+// ==========================================
 const bot = new Telegraf(TOKEN);
 
-// База данных пользователей
+// База данных пользователей (хранится в памяти RAM)
+// Структура: { userId: { name: "Имя", waitingForName: false } }
 const usersDB = {}; 
 
-// --- HTTP СЕРВЕР ДЛЯ RENDER ---
+// ==========================================
+// HTTP СЕРВЕР (ЧТОБЫ RENDER НЕ ВЫКЛЮЧАЛ БОТА)
+// ==========================================
 const server = http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
     res.end('Vexa AI is alive! 🤖');
 });
 
 server.listen(PORT, () => {
-    console.log(`[SERVER] Vexa AI работает на порту ${PORT}`);
+    console.log(`[SERVER] Vexa AI слушает порт ${PORT}`);
     
-    // Авто-пингер
+    // Авто-пингер каждые 5 минут
     setInterval(() => {
-        try {
-            fetch(SERVER_URL).catch(e => {});
-        } catch (e) {}
+        fetch(SERVER_URL).catch(() => {}); 
     }, 5 * 60 * 1000);
 });
 
-// --- ЛОГИКА БОТА ---
+// ==========================================
+// ЛОГИКА ОТВЕТОВ (VEXA AI)
+// ==========================================
+async function getResponse(text, userName) {
+    const lowerText = text.toLowerCase();
 
-async function getVexaResponse(userText, userName) {
-    const lowerText = userText.toLowerCase();
-    
-    if (lowerText.includes('привет') || lowerText.includes('хай')) return `Привет, ${userName}. Как настроение?`;
-    if (lowerText.includes('кто ты')) return `Я Vexa AI, твой личный помощник в этой группе.`;
-    if (lowerText.includes('как дела')) return `Системы работают стабильно. У тебя как?`;
-    if (lowerText.includes('шутка')) return `Почему программисты путают Хэллоуин и Рождество? Потому что 31 Oct == 25 Dec.`;
+    // --- ПРИКОЛЫ И ШУТКИ ---
+    if (lowerText.includes('привет') || lowerText.includes('хай')) return `Привет, ${userName}! Как настроение?`;
+    if (lowerText.includes('кто ты')) return `Я Vexa AI, твой умный помощник. Нейтральная, но острая.`;
+    if (lowerText.includes('как дела')) return `Системы работают отлично. У тебя как?`;
+    if (lowerText.includes('шутка')) return `Почему программисты путают Хэллоуин и Рождество? 31 Oct == 25 Dec.`;
     if (lowerText.includes('код')) return `Я не пишу код, я общаюсь. Но я знаю, что ты любишь кодить!`;
-    
-    const rudeWords = ['дурак', 'бот', 'херня', 'иди нах', 'тупой'];
+    if (lowerText.includes('мем')) return `🤣 Вот это да, мем! Но я лучше текстом отвечу.`;
+
+    // --- ПРОВЕРКА НА ГРУБОСТЬ ---
+    const rudeWords = ['дурак', 'бот', 'херня', 'иди нах', 'тупой', 'урод'];
     const isRude = rudeWords.some(word => lowerText.includes(word));
 
     if (isRude) {
         const replies = [
-            `Ого, ${userName}, такой тон? Я могла бы ответить по-другому.`,
-            `Не стоит со мной так общаться, ${userName}.`,
-            `Хм, агрессия? Может, успокоишься?`
+            `Ого, ${userName}, такой тон? Я могу ответить по-другому.`,
+            `Не стоит со мной так общаться, ${userName}. Я запомнила это.`,
+            `Хм, агрессия? Может, успокоишься? 😠`
         ];
         return replies[Math.floor(Math.random() * replies.length)];
     }
 
-    const generic = [
-        `Интересная мысль, ${userName}. Продолжай.`,
+    // --- ОБЫЧНЫЙ ОТВЕТ ---
+    const normalReplies = [
+        `Интересно, ${userName}. Продолжай.`,
         `Я слушаю тебя внимательно. Что дальше?`,
-        `Отлично сказано, ${userName}!`
+        `Отлично сказано, ${userName}!`,
+        `Понимаю. А что ты думаешь об этом сам?`,
+        `Хороший вопрос, ${userName}.`
     ];
-    return generic[Math.floor(Math.random() * generic.length)];
+    return normalReplies[Math.floor(Math.random() * normalReplies.length)];
 }
 
-// Обработка /start
+// ==========================================
+// КОМАНДЫ
+// ==========================================
+
+// Команда /start
 bot.command('start', async (ctx) => {
     const chatId = ctx.from.id;
     const firstName = ctx.from.first_name;
 
-    // Если имя уже есть
+    // Если пользователь уже есть в базе и имя задано
     if (usersDB[chatId]?.name) {
         await ctx.reply(
-            `Привет, ${usersDB[chatId].name}! Ты уже в базе.\nХочешь поменять имя? Напиши /change <новое_имя>`,
+            `Привет, ${usersDB[chatId].name}! Ты уже в базе.\n\nХочешь поменять имя? Напиши /change <новое_имя>`,
             { parse_mode: 'HTML' }
         );
         return;
     }
 
-    // Первое подключение - ждем имя
+    // Первое подключение: просим имя
     await ctx.reply(
         `👋 Привет, ${firstName}!\n\nЧтобы я знал, кто ты есть, напиши мне своё имя прямо сейчас.\n(Например: "Меня зовут Алекс")`,
         { parse_mode: 'HTML' }
     );
-    
-    // Сохраняем флаг ожидания имени прямо в объект пользователя
+
+    // Запоминаем, что ждем имя
     usersDB[chatId] = { name: null, waitingForName: true };
 });
 
@@ -93,89 +111,82 @@ bot.command('change', async (ctx) => {
     }
     const newName = args.slice(1).join(' ');
     const chatId = ctx.from.id;
-    
+
     usersDB[chatId] = {
         name: newName,
-        history: []
+        waitingForName: false
     };
-    
+
     await ctx.reply(`✅ Имя изменено на "${newName}". Теперь я буду обращаться к тебе так.`);
 });
 
-// ГЛАВНАЯ ОБРАБОТКА СООБЩЕНИЙ
+// ==========================================
+// ОСНОВНАЯ ЛОГИКА (ОБРАБОТКА СООБЩЕНИЙ)
+// ==========================================
+
 bot.on('message', async (ctx) => {
-    const message = ctx.message;
-    const text = message.text || '';
-    const fromId = message.from.id;
-    const fromName = message.from.first_name;
-
-    // 1. Проверяем, упомянули ли бота
-    // Ищем: "Vexa", "векса", "@VexaAI", "Vexa " (с пробелом), "Vexa," (с запятой)
-    const mentionRegex = /\b(vexa|векса)\b/i;
-    const isMentioned = mentionRegex.test(text) || 
-                        text.includes('@VexaAI') || 
-                        text.includes('@Vexa');
-
-    // 2. Проверяем, ответ ли это на сообщение бота
-    const isReplyToBot = message.reply_to_message && message.reply_to_message.from.id === bot.botInfo.id;
-
-    // Если не упомянули и не ответ — игнорируем (чтобы не спамить)
-    if (!isMentioned && !isReplyToBot) {
-        return;
-    }
-
-    // 3. Получаем данные пользователя
-    let userData = usersDB[fromId];
-
-    // Если пользователь еще не назвал имя, но пишет в чате
-    if (!userData || !userData.name) {
-        // Можно отправить одно напоминание, если он еще не заходил в /start
-        // Но лучше молчать, чтобы не раздражать других участников
-        return;
-    }
-
-    const userName = userData.name;
-
-    // 4. Генерируем ответ
-    let responseText = '';
     try {
-        responseText = await getVexaResponse(text, userName);
-    } catch (err) {
-        console.error('[ERROR] Ошибка генерации ответа:', err);
-        responseText = `Ошибка при обработке, ${userName}. Попробуй позже.`;
-    }
+        const message = ctx.message;
+        const text = message.text || '';
+        const fromId = message.from.id;
+        const fromName = message.from.first_name;
 
-    // 5. Обновляем историю
-    if (!userData.history) userData.history = [];
-    userData.history.push({ user: userName, msg: text });
-    if (userData.history.length > 10) userData.history.shift();
+        // 1. Проверяем условие ответа
+        // Ищем: "Vexa", "векса" (без @), "@VexaAI", "@Vexa"
+        const mentionRegex = /\b(vexa|векса)\b/i;
+        const isMentioned = mentionRegex.test(text) || 
+                            text.includes('@VexaAI') || 
+                            text.includes('@Vexa');
+        
+        // Или если это ответ на сообщение самого бота
+        const isReplyToBot = message.reply_to_message && message.reply_to_message.from.id === bot.botInfo.id;
 
-    // 6. Отправляем ответ
-    try {
+        // Если не упомянули и не ответ — молчим (даже в группе)
+        if (!isMentioned && !isReplyToBot) {
+            return;
+        }
+
+        // 2. Проверяем, знает ли бот пользователя
+        let userData = usersDB[fromId];
+
+        if (!userData || !userData.name) {
+            // Если пользователь еще не назвал имя, но пишет в чате
+            // Можно отправить напоминание, но лучше молчать, чтобы не спамить
+            return;
+        }
+
+        const userName = userData.name;
+
+        // 3. Генерируем ответ
+        const responseText = await getResponse(text, userName);
+
+        // 4. Отправляем ответ
         await ctx.reply(responseText);
-    } catch (err) {
-        console.error('[ERROR] Ошибка отправки:', err);
+
+    } catch (error) {
+        console.error('[ERROR] Ошибка обработки сообщения:', error);
     }
 });
 
-// ОТДЕЛЬНАЯ ОБРАБОТКА ВВОДА ИМЕНИ (без сессии)
+// ==========================================
+// ОБРАБОТКА ВВОДА ИМЕНИ (БЕЗ СЕССИЙ)
+// ==========================================
 bot.on('text', async (ctx) => {
     const chatId = ctx.from.id;
     const userData = usersDB[chatId];
 
-    // Проверяем, ждет ли бот имя
+    // Если бот ждет имя от этого пользователя
     if (userData && userData.waitingForName) {
         const text = ctx.message.text;
         
         // Извлекаем имя: удаляем "меня зовут", "зовут", "я", "мне"
         let name = text.replace(/(меня зовут|зовут|мне|я)/gi, '').trim();
         
-        // Если после очистки осталось имя
+        // Если после очистки осталось что-то похожее на имя
         if (name.length > 0) {
             usersDB[chatId] = {
                 name: name,
-                history: [],
-                waitingForName: false // Снимаем флаг ожидания
+                waitingForName: false
             };
             
             await ctx.reply(`✅ Принято! Теперь я знаю, что тебя зовут **${name}**. Приятно познакомиться!`);
@@ -185,13 +196,16 @@ bot.on('text', async (ctx) => {
     }
 });
 
+// ==========================================
 // ЗАПУСК
+// ==========================================
 bot.launch().catch(err => {
     console.error('[CRITICAL] Ошибка запуска Telegram:', err);
     process.exit(1);
 });
 
-console.log('Vexa AI успешно запущена!');
+console.log('Vexa AI успешно запущена! Жду команды /start.');
 
+// Graceful exit
 process.once('SIGINT', () => bot.stop('SIGINT'));
 process.once('SIGTERM', () => bot.stop('SIGTERM'));
