@@ -12,37 +12,41 @@ app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, 'public')));
 
-console.log("🚀 Сервер запущен...");
+console.log("🚀 Сервер Пети AI запускается...");
 
 app.post('/api/chat', async (req, res) => {
+    console.log("📥 Получен запрос на /api/chat");
+    
     try {
         const { message, modelType, history } = req.body;
 
-        if (!message) return res.status(400).json({ error: true, message: "Пустое сообщение" });
-
-        let selectedModel = "llama3-8b-8192";
-        let systemPrompt = "Ты Петя AI от компании Паток. Ты быстрый и умный.";
-
-        // Логика моделей
-        if (modelType === "Petya-Max 1.0") {
-            selectedModel = "mixtral-8x7b-32768";
-            systemPrompt += " Ты думаешь перед ответом, тщательно проверяешь информацию и даешь развернутые объяснения.";
-        } else if (modelType === "Petya-Plus") {
-            selectedModel = "mixtral-8x7b-32768";
-            systemPrompt += " Ты работаешь с базой данных, внимателен к деталям и пишешь много текста.";
-        } else {
-            // Flash
-            systemPrompt += " Ты отвечаешь максимально быстро и кратко.";
+        if (!message) {
+            console.log("❌ Ошибка: пустое сообщение");
+            return res.status(400).json({ error: true, message: "Сообщение пустое!" });
         }
 
-        // Формируем историю
+        let selectedModel = "llama3-8b-8192";
+        let systemPrompt = "Ты Петя AI от компании Паток.";
+
+        if (modelType === "Petya-Max 1.0") {
+            selectedModel = "mixtral-8x7b-32768";
+            systemPrompt += " Ты думаешь перед ответом, тщательно проверяешь информацию.";
+        } else if (modelType === "Petya-Plus") {
+            selectedModel = "mixtral-8x7b-32768";
+            systemPrompt += " Ты работаешь с базой данных, внимателен к деталям.";
+        } else {
+            // Flash
+            systemPrompt += " Ты отвечаешь быстро.";
+        }
+
         const messages = [
             { role: "system", content: systemPrompt },
             ...history,
             { role: "user", content: message }
         ];
 
-        // ЗАПРОС К GROQ ЧЕРЕЗ FETCH (Без библиотек!)
+        console.log(`🤖 Отправка в Groq моделью: ${selectedModel}`);
+
         const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
             method: "POST",
             headers: {
@@ -58,18 +62,21 @@ app.post('/api/chat', async (req, res) => {
         });
 
         if (!response.ok) {
-            const errData = await response.text();
-            console.error("Ошибка GROQ:", errData);
-            throw new Error("Ошибка связи с Groq");
+            const errText = await response.text();
+            console.error("❌ Ответ от Groq неверный:", errText);
+            throw new Error(`Groq Error: ${response.status}`);
         }
 
         const data = await response.json();
         const reply = data.choices[0].message.content;
 
+        console.log("✅ Ответ получен!");
         res.json({ reply: reply });
 
     } catch (error) {
-        console.error("❌ Ошибка на сервере:", error.message);
+        console.error("💥 КРИТИЧЕСКАЯ ОШИБКА НА СЕРВЕРЕ:", error.message);
+        console.error(error.stack); // Покажет точную строку ошибки
+        
         res.status(500).json({ 
             error: true, 
             message: "Связь с Петей не удалась. Попробуйте ещё раз!" 
