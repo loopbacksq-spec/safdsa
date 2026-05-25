@@ -6,9 +6,8 @@
     <title>Петя AI | Паток</title>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <style>
-        /* --- УЛЬТРА ОПТИМИЗИРОВАННЫЙ ДИЗАЙН --- */
+        /* --- УЛЬТРА МОБИЛЬНЫЙ ДИЗАЙН --- */
         :root { --bg: #fff; --txt: #000; --grid: 20px; --accent: #000; }
-        
         * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
         
         body {
@@ -27,7 +26,6 @@
             background: rgba(255,255,255,0.98); padding: 30px; border: 4px solid var(--accent);
             box-shadow: 8px 8px 0 var(--accent); max-width: 90%; width: 400px;
         }
-
         h1 { font-size: 2.5rem; margin: 0 0 10px; letter-spacing: -2px; border-bottom: 4px solid var(--accent); display: inline-block; padding-bottom: 5px; text-transform: uppercase; }
         .info { font-size: 1.1rem; font-weight: bold; margin-bottom: 8px; }
         .creator { font-size: 0.9rem; opacity: 0.7; margin-top: 5px; }
@@ -43,10 +41,16 @@
         /* Интерфейс чата */
         #chat-ui { display: none; width: 100%; height: 100%; background: #fff; flex-direction: column; position: relative; }
         
+        /* Верхняя панель с кнопкой меню */
         .top-bar {
             padding: 10px 15px; border-bottom: 3px solid var(--accent);
             display: flex; justify-content: space-between; align-items: center;
-            background: #fff; z-index: 5; flex-shrink: 0;
+            background: #fff; z-index: 50; flex-shrink: 0;
+        }
+
+        .menu-btn {
+            background: none; border: none; font-size: 1.5rem; cursor: pointer; padding: 5px;
+            color: var(--accent); font-weight: bold;
         }
 
         select {
@@ -55,26 +59,7 @@
             appearance: none; font-size: 0.9rem;
         }
 
-        .settings-btn {
-            background: #fff; border: 2px solid var(--accent); padding: 6px 12px;
-            cursor: pointer; font-weight: bold; font-size: 1.2rem;
-        }
-
-        .main-container { display: flex; flex: 1; overflow: hidden; }
-
-        .sidebar {
-            width: 220px; border-right: 3px solid var(--accent);
-            padding: 15px; display: flex; flex-direction: column; gap: 10px;
-            background: #f5f5f5; flex-shrink: 0;
-        }
-
-        .new-btn {
-            background: var(--accent); color: #fff; border: none; padding: 10px;
-            cursor: pointer; font-weight: bold; font-size: 0.9rem; text-transform: uppercase;
-        }
-
-        .ip-info { font-size: 0.7rem; color: #666; margin-top: auto; border-top: 1px solid #ccc; padding-top: 8px; }
-
+        /* Область чата (на весь экран) */
         .chat-area {
             flex: 1; padding: 15px; overflow-y: auto; display: flex; flex-direction: column; gap: 15px;
             scroll-behavior: smooth; background: #fff;
@@ -82,7 +67,8 @@
 
         .msg {
             max-width: 90%; padding: 12px 16px; border: 2px solid var(--accent);
-            line-height: 1.5; font-size: 0.95rem; animation: fadeIn 0.2s ease;
+            line-height: 1.5; font-size: 1rem; animation: fadeIn 0.2s ease;
+            word-wrap: break-word;
         }
 
         @keyframes fadeIn { from { opacity: 0; transform: translateY(5px); } to { opacity: 1; transform: translateY(0); } }
@@ -97,6 +83,7 @@
             overflow-x: auto; margin: 8px 0; font-size: 0.85rem;
         }
 
+        /* Поле ввода (снизу) */
         .input-area {
             padding: 12px; border-top: 3px solid var(--accent); background: #fff;
             display: flex; gap: 10px; flex-shrink: 0;
@@ -112,43 +99,51 @@
             font-weight: bold; font-size: 1rem; cursor: pointer;
         }
 
-        .settings-panel {
-            position: absolute; bottom: 70px; left: 15px; background: #fff;
-            border: 2px solid var(--accent); padding: 15px; display: none;
-            box-shadow: 6px 6px 0 var(--accent); z-index: 20; width: 280px;
+        /* Выезжающее меню (Шторка) */
+        .sidebar-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.5); z-index: 60; display: none;
+            opacity: 0; transition: opacity 0.3s;
+        }
+        .sidebar-overlay.active { display: block; opacity: 1; }
+
+        .sidebar-panel {
+            position: fixed; top: 0; right: -300px; width: 280px; height: 100%;
+            background: #fff; border-left: 3px solid var(--accent);
+            z-index: 70; transition: right 0.3s ease;
+            display: flex; flex-direction: column; padding: 20px;
+            box-shadow: -5px 0 15px rgba(0,0,0,0.2);
+        }
+        .sidebar-panel.active { right: 0; }
+
+        .sidebar-header {
+            font-size: 1.5rem; font-weight: bold; margin-bottom: 20px;
+            border-bottom: 2px solid var(--accent); padding-bottom: 10px;
         }
 
+        .menu-item {
+            padding: 15px; border: 2px solid var(--accent); margin-bottom: 10px;
+            background: #fff; font-weight: bold; cursor: pointer; text-align: center;
+            transition: all 0.2s;
+        }
+        .menu-item:active { background: var(--accent); color: #fff; transform: scale(0.98); }
+
+        .settings-panel {
+            margin-top: auto; padding-top: 20px; border-top: 2px solid var(--accent);
+        }
         .warning { font-size: 0.7rem; color: #555; margin-top: 8px; font-style: italic; }
 
         .typing { font-style: italic; color: #666; font-size: 0.85rem; padding-left: 15px; border-left: 3px solid var(--accent); }
 
-        /* АДАПТИВНОСТЬ ПОД ТЕЛЕФОН */
-        @media (max-width: 768px) {
-            h1 { font-size: 2rem; }
-            .btn { padding: 12px 30px; font-size: 1rem; }
-            
-            .sidebar {
-                width: 100%; height: auto; border-right: none; border-bottom: 3px solid var(--accent);
-                flex-direction: row; justify-content: space-between; align-items: center;
-                padding: 10px 15px; background: #f0f0f0;
-            }
-            .new-btn { padding: 8px 12px; font-size: 0.8rem; }
-            .ip-info { display: none; }
-            
-            .chat-area { padding: 10px; }
-            .msg { max-width: 95%; font-size: 1rem; padding: 10px 14px; }
-            pre { font-size: 0.8rem; }
-            
-            .input-area { padding: 10px; }
-            input { padding: 10px; font-size: 1rem; }
-            .send-btn { padding: 0 20px; }
-            
-            .settings-panel { left: 10px; right: 10px; width: auto; bottom: 60px; }
+        /* ПК версия (если нужно, но мы делаем упор на мобилку) */
+        @media (min-width: 769px) {
+            .sidebar-panel { width: 300px; }
         }
     </style>
 </head>
 <body>
 
+    <!-- ЭКРАН ПРИВЕТСТВИЯ -->
     <div id="welcome">
         <h1>ПЕТЯ AI</h1>
         <div class="info">КОМПАНИЯ "ПАТОК"</div>
@@ -158,32 +153,45 @@
         <button class="btn" onclick="startChat()">НАЧАТЬ ОБЩЕНИЕ</button>
     </div>
 
+    <!-- ИНТЕРФЕЙС ЧАТА -->
     <div id="chat-ui">
+        <!-- Верхняя панель: Меню + Выбор модели -->
         <div class="top-bar">
+            <button class="menu-btn" onclick="toggleSidebar()">☰ МЕНЮ</button>
             <select id="modelSelect">
-                <option value="Petya-Flash 1.0">Petya-Flash 1.0</option>
-                <option value="Petya-Max 1.0">Petya-Max 1.0</option>
-                <option value="Petya-Plus">Petya-Plus</option>
+                <option value="Petya-Flash 1.0">Flash</option>
+                <option value="Petya-Max 1.0">Max</option>
+                <option value="Petya-Plus">Plus</option>
             </select>
-            <button class="settings-btn" onclick="toggleSettings()">⚙️</button>
         </div>
-        <div class="main-container">
-            <div class="sidebar">
-                <button class="new-btn" onclick="newChat()">+ НОВЫЙ ЧАТ</button>
-                <div class="ip-info">IP: <span id="ip">...</span></div>
-            </div>
-            <div class="chat-area" id="chatArea"></div>
+
+        <!-- Область чата (вся высота) -->
+        <div class="chat-area" id="chatArea">
+            <!-- Сообщения будут здесь -->
         </div>
+
+        <!-- Поле ввода -->
         <div class="input-area">
             <input type="text" id="inp" placeholder="Напишите сообщение..." onkeypress="if(event.key==='Enter') send()">
-            <button class="send-btn" onclick="send()">ОТПРАВИТЬ</button>
+            <button class="send-btn" onclick="send()">➤</button>
         </div>
-        <div class="settings-panel" id="setPanel">
-            <label style="display:flex; align-items:center; gap:8px; font-weight:bold;">
-                <input type="checkbox" id="mem" checked> Память включена
-            </label>
-            <p class="warning">⚠️ При обновлении чат сбрасывается. ИИ может ошибаться.</p>
-            <button onclick="toggleSettings()" style="margin-top:8px; padding:5px; cursor:pointer;">Закрыть</button>
+
+        <!-- Затемнение фона при открытом меню -->
+        <div class="sidebar-overlay" id="overlay" onclick="toggleSidebar()"></div>
+
+        <!-- Боковая панель (выезжает справа) -->
+        <div class="sidebar-panel" id="sidebar">
+            <div class="sidebar-header">МЕНЮ ПЕТИ</div>
+            
+            <div class="menu-item" onclick="newChat()">+ НОВЫЙ ЧАТ</div>
+            
+            <div class="settings-panel">
+                <label style="display:flex; align-items:center; gap:8px; font-weight:bold; margin-bottom:10px;">
+                    <input type="checkbox" id="mem" checked> Память включена
+                </label>
+                <p class="warning">⚠️ При обновлении чат сбрасывается.<br>ИИ может ошибаться.</p>
+                <div style="font-size:0.7rem; margin-top:10px; color:#555;">IP: <span id="ip">...</span></div>
+            </div>
         </div>
     </div>
 
@@ -200,6 +208,21 @@
             document.getElementById('welcome').style.display = 'none';
             document.getElementById('chat-ui').style.display = 'flex';
             addBot("Привет! Я Петя AI от компании Паток. Создан leymik. Чем помогу?");
+        }
+
+        // Открытие/закрытие меню
+        function toggleSidebar() {
+            const panel = document.getElementById('sidebar');
+            const overlay = document.getElementById('overlay');
+            const isActive = panel.classList.contains('active');
+            
+            if (isActive) {
+                panel.classList.remove('active');
+                overlay.classList.remove('active');
+            } else {
+                panel.classList.add('active');
+                overlay.classList.add('active');
+            }
         }
 
         async function send() {
@@ -270,8 +293,12 @@
 
         function removeLoad(id) { document.getElementById(id)?.remove(); }
         function scrollToBottom() { document.getElementById('chatArea').scrollTop = document.getElementById('chatArea').scrollHeight; }
-        function toggleSettings() { document.getElementById('setPanel').style.display = document.getElementById('setPanel').style.display==='block'?'none':'block'; }
-        function newChat() { history=[]; document.getElementById('chatArea').innerHTML=''; addBot("Новый чат начат. Я готов к работе."); }
+        function newChat() { 
+            history=[]; 
+            document.getElementById('chatArea').innerHTML=''; 
+            addBot("Новый чат начат. Я готов к работе."); 
+            toggleSidebar(); // Закрываем меню после создания
+        }
 
         document.getElementById('modelSelect').onchange = (e) => {
             currentModelName = e.target.value;
